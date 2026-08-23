@@ -13,7 +13,7 @@ This platform acts as the bridge. It allows a business (e.g., a government insti
 
 ## 🛠️ Key Features (Hitting the Track 01 Bar)
 
-- **Agent-Readable Invoices:** Uses LLMs (via OpenRouter) to ingest traditional invoices and convert them into structured, agent-readable JSON.
+- **Agent-Readable Invoices:** Uses LLMs (via Mistral) to ingest traditional invoices and convert them into structured, agent-readable JSON.
 - **ERC-8004 Agent Delegation:** Businesses set strict bounds (e.g., Maximum ₹100,000, 30-day expiry) on their autonomous agents.
 - **Gated Autonomy:** Every money action is explainable. The AI Risk Manager generates a `compliance_score`. The agent only executes Razorpay settlements if the score is highly confident.
 - **Graceful Failures:** If an invoice exceeds the delegated budget or fails the compliance check, the agent gracefully halts the transaction, logs the failure, and escalates to a human controller.
@@ -23,7 +23,7 @@ This platform acts as the bridge. It allows a business (e.g., a government insti
 
 - **Frontend:** React, Tailwind CSS, Shadcn UI, Vite
 - **Backend:** Node.js, Express, PostgreSQL
-- **AI / LLM:** OpenRouter API (GPT-4o / Claude 3.5 Sonnet)
+- **AI / LLM:** Mistral API (mistral-large-latest)
 - **Payments:** Razorpay Test APIs
 
 ## 🚦 Getting Started
@@ -32,7 +32,7 @@ This platform acts as the bridge. It allows a business (e.g., a government insti
 - Node.js (v18+)
 - PostgreSQL Database
 - Razorpay Test Account
-- OpenRouter API Key
+- Mistral API Key
 
 ### Local Development
 
@@ -55,7 +55,7 @@ This platform acts as the bridge. It allows a business (e.g., a government insti
    PORT=3001
    
    # AI Configuration
-   OPENROUTER_API_KEY=your_openrouter_key
+   MISTRAL_API_KEY=your_mistral_api_key
    
    # Razorpay Config
    RAZORPAY_KEY_ID=your_razorpay_key_id
@@ -77,3 +77,4 @@ This platform acts as the bridge. It allows a business (e.g., a government insti
 ## 🔐 Architecture Notes (Audit & Explainability)
 
 In compliance with the track rubric, the `agent_audit_logs` table maintains a strictly append-only record of all agent interactions. The system natively handles exceptions—such as AI hallucination or out-of-bounds payment requests—by failing closed and enforcing human-in-the-loop (HITL) manual checkout.
+

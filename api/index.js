@@ -294,10 +294,75 @@ app.post('/api/audit-logs', authMiddleware, async (req, res) => {
   res.status(201).json(result.rows[0]);
 });
 
+import { createAgentSettlementOrder, verifyWebhookSignature } from './razorpay.js';
+
+// --- Razorpay Agentic Commerce ---
+app.post('/api/agent/settle', authMiddleware, async (req, res) => {
+  const { invoice_id, delegation_max } = req.body;
+  const invoiceRes = await query('SELECT * FROM invoices WHERE id = $1 AND user_id = $2', [invoice_id, req.user.id]);
+  if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
+  const invoice = invoiceRes.rows[0];
+
+  // GATE 1 & 2: Explainable Risk & Bounded Budget
+  if (invoice.compliance_score < 85 || invoice.grand_total > delegation_max) {
+    // GRACEFUL FAILURE: Log it, block it
+    await query(`
+      INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, details)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `, [uuidv4(), req.user.id, 'settlement_blocked', invoice_id, invoice.invoice_number, invoice.grand_total, 'Agent Out of Bounds: Score too low or amount too high. Escalated to human.']);
+    
+    return res.status(403).json({ error: 'agent_out_of_bounds', message: 'Invoice exceeds autonomous bounds. Human review required.' });
+  }
+
+  try {
+    // Feature 2: Razorpay Route split payment (taxes)
+    const taxAmount = invoice.tax_total || 0;
+    const order = await createAgentSettlementOrder(invoice.grand_total, invoice.invoice_number, taxAmount);
+    
+    await query(`
+      INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, details)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `, [uuidv4(), req.user.id, 'order_created', invoice_id, invoice.invoice_number, invoice.grand_total, \`Razorpay Order \${order.id} generated autonomously.\`]);
+
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'payment_error', message: 'Failed to create Razorpay Order' });
+  }
+});
+
+app.post('/api/webhooks/razorpay', async (req, res) => {
+  const signature = req.headers['x-razorpay-signature'];
+  if (!signature) return res.status(400).send('No signature');
+  
+  const isValid = verifyWebhookSignature(JSON.stringify(req.body), signature);
+  if (!isValid) return res.status(400).send('Invalid signature');
+
+  const event = req.body.event;
+  if (event === 'payment.captured' || event === 'order.paid') {
+    const receipt = req.body.payload?.payment?.entity?.notes?.receipt || req.body.payload?.order?.entity?.receipt;
+    
+    if (receipt) {
+      await query('UPDATE invoices SET status = $1, updated_date = NOW() WHERE invoice_number = $2', ['paid', receipt]);
+      // Find user id for logging (simplified for hackathon)
+      const invRes = await query('SELECT id, user_id, grand_total FROM invoices WHERE invoice_number = $1', [receipt]);
+      if (invRes.rows.length > 0) {
+        const inv = invRes.rows[0];
+        await query(`
+          INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, details)
+          VALUES ($1,$2,$3,$4,$5,$6,$7)
+        `, [uuidv4(), inv.user_id, 'settlement_captured', inv.id, receipt, inv.grand_total, \`Webhook confirmed payment captured via Razorpay Route.\`]);
+      }
+    }
+  }
+
+  res.json({ status: 'ok' });
+});
+
 // --- LLM ---
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-4o';
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
+const MISTRAL_MODEL = process.env.MISTRAL_MODEL || 'mistral-large-latest';
+const MISTRAL_URL = 'https://api.mistral.ai/v1/chat/completions';
 
 function normalizeInvoiceResponse(data) {
   const out = {};
@@ -328,7 +393,7 @@ function normalizeInvoiceResponse(data) {
   return out;
 }
 
-async function callOpenRouter(prompt, schema) {
+async function callMistralAPI(prompt, schema) {
   const schemaHint = schema ? `\n\nReturn ONLY a flat JSON object matching this structure:\n${JSON.stringify(schema, null, 2)}` : '';
   const messages = [
     { role: 'system', content: 'You are a government invoice expert for India. Return ONLY valid JSON. Use Indian GST format, INR currency, and realistic government institution details.' + schemaHint },
@@ -336,7 +401,7 @@ async function callOpenRouter(prompt, schema) {
   ];
 
   const body = {
-    model: OPENROUTER_MODEL,
+    model: MISTRAL_MODEL,
     messages,
     temperature: 0.2,
     max_tokens: 500,
@@ -349,10 +414,10 @@ async function callOpenRouter(prompt, schema) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const res = await fetch(OPENROUTER_URL, {
+    const res = await fetch(MISTRAL_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+        'Authorization': `Bearer ${MISTRAL_API_KEY}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
@@ -371,7 +436,7 @@ async function handleResponse(res) {
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`OpenRouter API ${res.status}: ${errText}`);
+    throw new Error(`Mistral API ${res.status}: ${errText}`);
   }
 
   const data = await res.json();
@@ -454,16 +519,16 @@ app.post('/api/llm/invoke', authMiddleware, async (req, res) => {
   const { prompt, response_json_schema } = req.body;
   const isValidation = prompt?.toLowerCase().includes('validate') || prompt?.toLowerCase().includes('compliance');
 
-  if (!OPENROUTER_API_KEY) {
-    console.warn('OPENROUTER_API_KEY not set, using fallback');
+  if (!MISTRAL_API_KEY) {
+    console.warn('MISTRAL_API_KEY not set, using fallback');
     return res.json(isValidation ? MOCK_VALIDATION : generateMockInvoice(prompt));
   }
 
   try {
-    const parsed = await callOpenRouter(prompt, response_json_schema);
+    const parsed = await callMistralAPI(prompt, response_json_schema);
     return res.json(normalizeInvoiceResponse(parsed));
   } catch (err) {
-    console.error('OpenRouter call failed:', err.message);
+    console.error('Mistral call failed:', err.message);
     return res.json(isValidation ? MOCK_VALIDATION : normalizeInvoiceResponse(generateMockInvoice(prompt)));
   }
 });
@@ -506,3 +571,4 @@ if (!process.env.VERCEL) {
 }
 
 export default app;
+
