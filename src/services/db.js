@@ -68,5 +68,10 @@ export const db = {
     setToken: (token) => {
       localStorage.setItem('app_access_token', token);
     }
+  },
+  integrations: {
+    Core: {
+      InvokeLLM: async (data) => fetchApi('/llm/invoke', { method: 'POST', body: JSON.stringify(data) })
+    }
   }
 };
