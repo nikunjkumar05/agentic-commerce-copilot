@@ -13,16 +13,14 @@ export default function InvoiceForm({ invoice, onChange }) {
     const items = [...(invoice.line_items || [])];
     items[index] = { ...items[index], [field]: value };
     if (field === 'quantity' || field === 'unit_price' || field === 'tax_rate') {
-      const qty = field === 'quantity' ? Number(value) : Number(items[index].quantity || 0);
-      const price = field === 'unit_price' ? Number(value) : Number(items[index].unit_price || 0);
-      const tax = field === 'tax_rate' ? Number(value) : Number(items[index].tax_rate || 18);
-      const base = qty * price;
-      items[index].total = base + (base * tax / 100);
+      const qty = field === 'quantity' ? Number(value) : Number(items[index].quantity ?? 0);
+      const price = field === 'unit_price' ? Number(value) : Number(items[index].unit_price ?? 0);
+      items[index].total = qty * price;
     }
-    const subtotal = items.reduce((sum, it) => sum + ((Number(it.quantity) || 0) * (Number(it.unit_price) || 0)), 0);
+    const subtotal = items.reduce((sum, it) => sum + (Number(it.quantity ?? 0) * Number(it.unit_price ?? 0)), 0);
     const taxTotal = items.reduce((sum, it) => {
-      const base = (Number(it.quantity) || 0) * (Number(it.unit_price) || 0);
-      return sum + (base * (Number(it.tax_rate) || 18) / 100);
+      const base = Number(it.quantity ?? 0) * Number(it.unit_price ?? 0);
+      return sum + (base * (Number(it.tax_rate ?? 18)) / 100);
     }, 0);
     onChange({ ...invoice, line_items: items, subtotal, tax_total: taxTotal, grand_total: subtotal + taxTotal });
   };
@@ -34,10 +32,10 @@ export default function InvoiceForm({ invoice, onChange }) {
 
   const removeLineItem = (index) => {
     const items = (invoice.line_items || []).filter((_, i) => i !== index);
-    const subtotal = items.reduce((s, it) => s + ((Number(it.quantity) || 0) * (Number(it.unit_price) || 0)), 0);
+    const subtotal = items.reduce((s, it) => s + (Number(it.quantity ?? 0) * Number(it.unit_price ?? 0)), 0);
     const taxTotal = items.reduce((s, it) => {
-      const base = (Number(it.quantity) || 0) * (Number(it.unit_price) || 0);
-      return s + (base * (Number(it.tax_rate) || 18) / 100);
+      const base = Number(it.quantity ?? 0) * Number(it.unit_price ?? 0);
+      return s + (base * (Number(it.tax_rate ?? 18)) / 100);
     }, 0);
     onChange({ ...invoice, line_items: items, subtotal, tax_total: taxTotal, grand_total: subtotal + taxTotal });
   };
@@ -129,11 +127,11 @@ export default function InvoiceForm({ invoice, onChange }) {
             <div className="grid grid-cols-3 gap-2">
               <div>
                 <Label className="text-[10px] text-muted-foreground">Qty</Label>
-                <Input type="number" value={item.quantity || ''} onChange={e => updateLineItem(idx, 'quantity', e.target.value)} className="h-8 text-sm bg-white" />
+                <Input type="number" value={item.quantity ?? 0} onChange={e => updateLineItem(idx, 'quantity', e.target.value)} className="h-8 text-sm bg-white" />
               </div>
               <div>
                 <Label className="text-[10px] text-muted-foreground">Unit Price</Label>
-                <Input type="number" value={item.unit_price || ''} onChange={e => updateLineItem(idx, 'unit_price', e.target.value)} className="h-8 text-sm bg-white" />
+                <Input type="number" value={item.unit_price ?? 0} onChange={e => updateLineItem(idx, 'unit_price', e.target.value)} className="h-8 text-sm bg-white" />
               </div>
               <div>
                 <Label className="text-[10px] text-muted-foreground">Tax %</Label>

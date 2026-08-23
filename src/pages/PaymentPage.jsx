@@ -1,6 +1,6 @@
 import { db } from '@/services/db';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
@@ -31,8 +31,18 @@ export default function PaymentPage() {
   const [maxAmount, setMaxAmount] = useState('100000');
   const [expiryDays, setExpiryDays] = useState('30');
 
-  // Milestones state
-  const [milestones, setMilestones] = useState([]);
+  // Milestones state — persisted per invoice
+  const [milestones, setMilestones] = useState(() => {
+    try {
+      const stored = localStorage.getItem(`milestones_${id}`);
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
+
+  // Persist milestones to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem(`milestones_${id}`, JSON.stringify(milestones));
+  }, [milestones, id]);
 
   const { data: invoice, isLoading } = useQuery({
     queryKey: ['invoice', id],
@@ -70,16 +80,19 @@ export default function PaymentPage() {
 
   const addMilestone = () => {
     if (!invoice) return;
-    const remaining = invoice.grand_total - milestones.reduce((s, m) => s + m.amount, 0);
-    setMilestones([...milestones, {
-      description: `Phase ${milestones.length + 1}`,
-      amount: Math.max(0, remaining),
+    const numMilestones = milestones.length + 1;
+    const perMilestone = Math.round(invoice.grand_total / numMilestones);
+    const updated = milestones.map(m => ({ ...m, amount: perMilestone }));
+    updated.push({
+      description: `Phase ${numMilestones}`,
+      amount: invoice.grand_total - updated.reduce((s, m) => s + m.amount, 0),
       status: 'pending',
       recipients: [{ name: invoice.recipient_name || 'Recipient', address: '0x...', percentage: 100 }],
-    }]);
+    });
+    setMilestones(updated);
   };
 
-  const handleSetupDelegation = () => {
+  const handleSetupDelegation = async () => {
     const del = {
       maxAmount: Number(maxAmount),
       expiry: new Date(Date.now() + Number(expiryDays) * 86400000).toISOString(),
@@ -89,11 +102,15 @@ export default function PaymentPage() {
     };
     localStorage.setItem('agent_delegation', JSON.stringify(del));
     setDelegation(del);
-    db.entities.AgentAuditLog.create({
-      action: 'delegation_created', amount: Number(maxAmount),
-      agent_address: del.agentAddress, owner_address: del.ownerAddress,
-      details: `Delegation up to ₹${maxAmount} for ${expiryDays} days`,
-    });
+    try {
+      await db.entities.AgentAuditLog.create({
+        action: 'delegation_created', amount: Number(maxAmount),
+        agent_address: del.agentAddress, owner_address: del.ownerAddress,
+        details: `Delegation up to ₹${maxAmount} for ${expiryDays} days`,
+      });
+    } catch (err) {
+      console.error('Failed to log delegation:', err);
+    }
     toast.success('Agent delegation created');
   };
 
@@ -147,13 +164,17 @@ export default function PaymentPage() {
     setIsProcessing(false);
   };
 
-  const revokeDelegation = () => {
+  const revokeDelegation = async () => {
     localStorage.removeItem('agent_delegation');
-    db.entities.AgentAuditLog.create({
-      action: 'delegation_revoked',
-      agent_address: delegation?.agentAddress, owner_address: delegation?.ownerAddress,
-      details: 'Delegation revoked by owner',
-    });
+    try {
+      await db.entities.AgentAuditLog.create({
+        action: 'delegation_revoked',
+        agent_address: delegation?.agentAddress, owner_address: delegation?.ownerAddress,
+        details: 'Delegation revoked by owner',
+      });
+    } catch (err) {
+      console.error('Failed to log delegation revocation:', err);
+    }
     setDelegation(null);
     toast.success('Delegation revoked');
   };

@@ -33,8 +33,9 @@ async function seedDemoData(userId) {
       { description: 'Consulting Services', quantity: 5, unit_price: 15000, tax_rate: 18, total: 75000 },
       { description: 'Software License', quantity: 2, unit_price: 25000, tax_rate: 18, total: 50000 },
     ];
-    const subtotal = items.reduce((s, i) => s + i.total, 0);
+    const subtotal = items.reduce((s, i) => s + i.quantity * i.unit_price, 0);
     const tax_total = Math.round(subtotal * 0.18);
+    const grand_total = subtotal + tax_total;
     await query(`
       INSERT INTO invoices (id, user_id, invoice_number, institution_name, institution_address, gst_number,
         recipient_name, recipient_address, recipient_gst, line_items, subtotal, tax_total, grand_total,
@@ -44,7 +45,7 @@ async function seedDemoData(userId) {
       uuidv4(), userId, inv.invNo,
       inv.name, `${inv.name}, Delhi`, '07AAACN0372J1ZB',
       inv.recipient, `${inv.recipient}, New Delhi`, '07BBBCD0483K2ZC',
-      JSON.stringify(items), subtotal, tax_total, inv.amount,
+      JSON.stringify(items), subtotal, tax_total, grand_total,
       'INR', inv.status, inv.score || 85,
       JSON.stringify([{ field: 'gst', severity: 'info', issue: 'GST verified', suggestion: 'All GST numbers valid' }]),
       inv.date.toISOString().split('T')[0],
@@ -58,7 +59,7 @@ async function seedDemoData(userId) {
     { action: 'settlement', invNo: 'INV-2026-1001', amount: 125000, tx: '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' },
     { action: 'validation', invNo: 'INV-2026-1002', amount: 89000 },
     { action: 'delegation_created', amount: 500000 },
-    { action: 'settlement', invNo: 'INV-2026-1005', amount: 340000, tx: '0xgggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg' },
+    { action: 'settlement', invNo: 'INV-2026-1005', amount: 340000, tx: '0x1111111111111111111111111111111111111111111111111111111111111111' },
     { action: 'delegation_revoked' },
   ];
 
@@ -80,7 +81,6 @@ async function seedDemoData(userId) {
 let seedingDone = false;
 async function ensureSeeded() {
   if (seedingDone) return;
-  seedingDone = true;
   try {
     await initDb();
     const existing = await query('SELECT id FROM users WHERE email = $1', ['user@gmail.com']);
@@ -95,6 +95,7 @@ async function ensureSeeded() {
     } else {
       await seedDemoData(existing.rows[0].id);
     }
+    seedingDone = true;
   } catch (err) {
     console.error('DB init failed:', err);
   }
@@ -186,13 +187,21 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
 app.post('/api/auth/logout', (req, res) => res.json({ success: true }));
 
 // --- Invoices ---
+const ALLOWED_SORT_FIELDS = new Set([
+  'created_date', 'updated_date', 'invoice_date', 'due_date',
+  'grand_total', 'subtotal', 'tax_total', 'compliance_score',
+  'invoice_number', 'status', 'institution_name', 'recipient_name'
+]);
+
 app.get('/api/invoices', authMiddleware, async (req, res) => {
-  const sortField = (req.query.sort || '-created_date').replace(/^-/, '');
-  const dir = req.query.sort?.startsWith('-') ? 'DESC' : 'ASC';
+  const raw = req.query.sort || '-created_date';
+  const sortField = raw.replace(/^-/, '');
+  const dir = raw.startsWith('-') ? 'DESC' : 'ASC';
   const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  const safeField = ALLOWED_SORT_FIELDS.has(sortField) ? sortField : 'created_date';
 
   const result = await query(
-    `SELECT * FROM invoices WHERE user_id = $1 ORDER BY ${sortField} ${dir} LIMIT $2`,
+    `SELECT * FROM invoices WHERE user_id = $1 ORDER BY ${safeField} ${dir} LIMIT $2`,
     [req.user.id, limit]
   );
 
@@ -240,8 +249,16 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
   const params = [];
   let i = 1;
 
+  const ALLOWED_UPDATE_FIELDS = new Set([
+    'invoice_number', 'institution_name', 'institution_address', 'gst_number',
+    'recipient_name', 'recipient_address', 'recipient_gst', 'line_items',
+    'subtotal', 'tax_total', 'grand_total', 'currency', 'compliance_score',
+    'ai_suggestions', 'invoice_date', 'due_date', 'milestones', 'cid',
+    'tx_hash', 'payment_method', 'status'
+  ]);
+
   for (const [key, value] of Object.entries(data)) {
-    if (key === 'id' || key === 'user_id' || key === 'created_date') continue;
+    if (!ALLOWED_UPDATE_FIELDS.has(key)) continue;
     if (['line_items', 'ai_suggestions', 'milestones'].includes(key)) {
       sets.push(`${key} = $${i}`);
       params.push(JSON.stringify(value));
@@ -250,6 +267,9 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
       params.push(value);
     }
     i++;
+  }
+  if (sets.length === 0) {
+    return res.status(400).json({ error: 'bad_request', message: 'No valid fields to update' });
   }
   sets.push(`updated_date = NOW()`);
   params.push(req.params.id);
@@ -262,18 +282,24 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
 app.delete('/api/invoices/:id', authMiddleware, async (req, res) => {
   const exists = await query('SELECT id FROM invoices WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
   if (exists.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
-  await query('DELETE FROM invoices WHERE id = $1', [req.params.id]);
+  await query('DELETE FROM invoices WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
   res.json({ success: true });
 });
 
+const ALLOWED_AUDIT_SORT_FIELDS = new Set([
+  'created_date', 'action', 'amount', 'invoice_number'
+]);
+
 // --- Audit Logs ---
 app.get('/api/audit-logs', authMiddleware, async (req, res) => {
-  const sortField = (req.query.sort || '-created_date').replace(/^-/, '');
-  const dir = req.query.sort?.startsWith('-') ? 'DESC' : 'ASC';
+  const raw = req.query.sort || '-created_date';
+  const sortField = raw.replace(/^-/, '');
+  const dir = raw.startsWith('-') ? 'DESC' : 'ASC';
   const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  const safeField = ALLOWED_AUDIT_SORT_FIELDS.has(sortField) ? sortField : 'created_date';
 
   const result = await query(
-    `SELECT * FROM audit_logs WHERE user_id = $1 ORDER BY ${sortField} ${dir} LIMIT $2`,
+    `SELECT * FROM audit_logs WHERE user_id = $1 ORDER BY ${safeField} ${dir} LIMIT $2`,
     [req.user.id, limit]
   );
   res.json(result.rows);
@@ -365,6 +391,10 @@ const MISTRAL_MODEL = process.env.MISTRAL_MODEL || 'mistral-large-latest';
 const MISTRAL_URL = 'https://api.mistral.ai/v1/chat/completions';
 
 function normalizeInvoiceResponse(data) {
+  if (data && typeof data === 'object' && ('score' in data || 'passed' in data)) {
+    return { passed: !!data.passed, score: data.score ?? 0, issues: data.issues || [] };
+  }
+
   const out = {};
   out.institution_name = data.institution_name || data.seller?.name || data.vendor?.name || data.from?.name || data.institutionName || '';
   out.institution_address = data.institution_address || data.seller?.address || data.vendor?.address || data.from?.address || '';
@@ -372,18 +402,24 @@ function normalizeInvoiceResponse(data) {
   out.recipient_name = data.recipient_name || data.buyer?.name || data.customer?.name || data.client?.name || data.to?.name || data.recipientName || '';
   out.recipient_address = data.recipient_address || data.buyer?.address || data.customer?.address || data.client?.address || data.to?.address || '';
   out.recipient_gst = data.recipient_gst || data.buyer?.gstin || data.customer?.gstin || '';
-  out.line_items = data.line_items || data.items || data.products || data.services || [];
-  out.line_items = out.line_items.map(item => ({
+
+  const rawItems = data.line_items || data.items || data.products || data.services || [];
+  out.line_items = rawItems.map(item => ({
     description: item.description || item.name || item.product || item.service || '',
-    quantity: item.quantity || item.qty || 1,
-    unit_price: item.unit_price || item.unitPrice || item.price || item.rate || 0,
-    tax_rate: item.tax_rate || item.taxRate || item.gst_rate || item.gst || 18,
-    total: item.total || item.amount || (item.quantity || 1) * (item.unit_price || item.price || 0),
+    quantity: item.quantity ?? item.qty ?? 1,
+    unit_price: item.unit_price ?? item.unitPrice ?? item.price ?? item.rate ?? 0,
+    tax_rate: item.tax_rate ?? item.taxRate ?? item.gst_rate ?? item.gst ?? 18,
+    total: (item.quantity ?? item.qty ?? 1) * (item.unit_price ?? item.unitPrice ?? item.price ?? item.rate ?? 0),
   }));
-  const totals = data.totals || data.total || data.tax_summary || {};
-  out.subtotal = data.subtotal ?? totals.subtotal ?? totals.subTotal ?? 0;
-  out.tax_total = data.tax_total ?? totals.tax_total ?? totals.total_tax ?? totals.totalTax ?? totals.total_tax_amount ?? 0;
-  out.grand_total = data.grand_total ?? totals.grand_total ?? totals.grandTotal ?? totals.total ?? 0;
+
+  const totals = (data.totals && typeof data.totals === 'object') ? data.totals : {};
+  out.subtotal = data.subtotal ?? totals.subtotal ?? totals.subTotal ??
+    out.line_items.reduce((sum, it) => sum + it.quantity * it.unit_price, 0);
+  out.tax_total = data.tax_total ?? totals.tax_total ?? totals.total_tax ?? totals.totalTax ?? totals.total_tax_amount ??
+    out.line_items.reduce((sum, it) => sum + (it.quantity * it.unit_price * (it.tax_rate / 100)), 0);
+  out.grand_total = data.grand_total ?? totals.grand_total ?? totals.grandTotal ??
+    out.subtotal + out.tax_total;
+
   out.currency = data.currency || data.invoice_details?.currency || 'INR';
   const invDate = data.invoice_details || {};
   out.invoice_date = data.invoice_date || invDate.invoice_date || invDate.invoiceDate || new Date().toISOString().split('T')[0];
@@ -412,7 +448,7 @@ async function callMistralAPI(prompt, schema) {
   // strips markdown code fences before parsing.
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
+  const timeout = setTimeout(() => controller.abort(), 30000);
   try {
     const res = await fetch(MISTRAL_URL, {
       method: 'POST',
@@ -483,7 +519,7 @@ function generateMockInvoice(prompt) {
     const qty = randInt(1, 15);
     const price = randInt(1, 10) * 5000;
     const total = qty * price;
-    lineItems.push({ description: pick(items), quantity: qty, unit_price: price, tax_rate: 18, total });
+    lineItems.push({ description: pick(items), quantity: qty, unit_price: price, tax_rate: 18, total: qty * price });
     subtotal += total;
   }
 

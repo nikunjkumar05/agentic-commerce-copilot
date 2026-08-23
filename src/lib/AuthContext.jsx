@@ -25,17 +25,17 @@ export const AuthProvider = ({ children }) => {
     }
 
     try {
-      // Hit the backend /api/auth/me endpoint using our custom db.js wrapper
       const currentUser = await db.auth.me();
-      if (currentUser) {
+      if (currentUser && currentUser.id) {
         setUser(currentUser);
         setIsAuthenticated(true);
       } else {
-        throw new Error("Invalid session");
+        localStorage.removeItem('app_access_token');
+        setUser(null);
+        setIsAuthenticated(false);
       }
     } catch (error) {
-      console.error('User auth check failed:', error);
-      // If the token is invalid or expired, clear it out
+      console.error('Auth check failed:', error.message);
       localStorage.removeItem('app_access_token');
       setUser(null);
       setIsAuthenticated(false);

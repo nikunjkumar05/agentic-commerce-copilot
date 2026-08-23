@@ -22,7 +22,7 @@ export function validateGST(gst) {
 
 // Convert number to words (Indian system)
 export function numberToWords(num) {
-  if (num === 0) return 'Zero';
+  if (num === 0) return 'Zero Rupees Only';
   
   const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
     'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
@@ -37,6 +37,7 @@ export function numberToWords(num) {
   }
   
   const intPart = Math.floor(num);
+  const decPart = Math.round((num - intPart) * 100);
   let result = '';
   
   if (intPart >= 10000000) { result += convertHundreds(Math.floor(intPart / 10000000)) + ' Crore '; }
@@ -47,7 +48,12 @@ export function numberToWords(num) {
   const rem3 = rem2 % 1000;
   if (rem3 > 0) result += convertHundreds(rem3);
   
-  return result.trim() + ' Rupees Only';
+  result = result.trim() + ' Rupees';
+  if (decPart > 0) {
+    result += ' and ' + convertHundreds(decPart) + ' Paise';
+  }
+  result += ' Only';
+  return result;
 }
 
 // Generate fake IPFS CID

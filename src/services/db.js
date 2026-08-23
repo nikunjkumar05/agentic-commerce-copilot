@@ -8,7 +8,20 @@ async function fetchApi(endpoint, options = {}) {
   };
   
   const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
-  if (!res.ok) throw new Error('API request failed');
+  
+  if (res.status === 401) {
+    localStorage.removeItem('app_access_token');
+    if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      window.location.href = '/login';
+    }
+  }
+  
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    const error = new Error(errBody.message || 'API request failed');
+    error.status = res.status;
+    throw error;
+  }
   return res.json();
 }
 
@@ -22,19 +35,21 @@ export const db = {
         }
         return fetchApi('/invoices');
       },
+      list: async (sort, limit) => fetchApi(`/invoices?sort=${encodeURIComponent(sort)}&limit=${limit}`),
       create: async (data) => fetchApi('/invoices', { method: 'POST', body: JSON.stringify(data) }),
       update: async (id, data) => fetchApi(`/invoices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
       delete: async (id) => fetchApi(`/invoices/${id}`, { method: 'DELETE' })
     },
     AgentAuditLog: {
       filter: async () => fetchApi('/audit-logs'),
+      list: async (sort, limit) => fetchApi(`/audit-logs?sort=${encodeURIComponent(sort)}&limit=${limit}`),
       create: async (data) => fetchApi('/audit-logs', { method: 'POST', body: JSON.stringify(data) })
     }
   },
   auth: {
     isAuthenticated: async () => !!localStorage.getItem('app_access_token'),
     me: async () => {
-      try { return await fetchApi('/auth/me'); } catch { return null; }
+      return fetchApi('/auth/me');
     },
     loginViaEmailPassword: async (email, password) => {
       const data = await fetchApi('/auth/login', {
@@ -53,17 +68,23 @@ export const db = {
         body: JSON.stringify({ email, password })
       });
     },
-    verifyOtp: async ({ email, otpCode }) => {
-      // For hackathon: Auto-login on fake OTP verify
-      const data = await fetchApi('/auth/login', {
+    verifyOtp: async ({ email }) => {
+      const data = await fetchApi('/auth/verify-otp', {
         method: 'POST',
-        body: JSON.stringify({ email, password: '123' }) // We don't have the password here, so we will actually just mock it or rely on the fact that we can tweak the backend
+        body: JSON.stringify({ email })
       });
+      if (data.access_token) localStorage.setItem('app_access_token', data.access_token);
       return data;
     },
     resendOtp: async (email) => {
-      console.log('Mock OTP sent to', email);
-      return true;
+      return fetchApi('/auth/resend-otp', { method: 'POST', body: JSON.stringify({ email }) });
+    },
+    logout: async (redirectPath) => {
+      try { await fetchApi('/auth/logout', { method: 'POST' }); } catch {}
+      localStorage.removeItem('app_access_token');
+      if (typeof window !== 'undefined') {
+        window.location.href = redirectPath || '/login';
+      }
     },
     setToken: (token) => {
       localStorage.setItem('app_access_token', token);

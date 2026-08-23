@@ -71,8 +71,9 @@ export default function NewInvoice() {
     setChatMessages(prev => [...prev, { role: 'user', content: message }]);
     setIsGenerating(true);
 
-    const result = await db.integrations.Core.InvokeLLM({
-      prompt: `Generate a government invoice from this request: "${message}"
+    try {
+      const result = await db.integrations.Core.InvokeLLM({
+        prompt: `Generate a government invoice from this request: "${message}"
 
 Return ONLY a valid JSON object matching this exact schema:
 {
@@ -99,63 +100,89 @@ Rules:
 - Flag any compliance issues in ai_suggestions
 - Use Indian numbering format
 - If GST numbers are not provided, generate valid format ones and add info suggestion`,
-      response_json_schema: {
-        type: "object",
-        properties: {
-          institution_name: { type: "string" },
-          institution_address: { type: "string" },
-          gst_number: { type: "string" },
-          recipient_name: { type: "string" },
-          recipient_address: { type: "string" },
-          recipient_gst: { type: "string" },
-          line_items: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                description: { type: "string" },
-                quantity: { type: "number" },
-                unit_price: { type: "number" },
-                tax_rate: { type: "number" },
-                total: { type: "number" }
+        response_json_schema: {
+          type: "object",
+          properties: {
+            institution_name: { type: "string" },
+            institution_address: { type: "string" },
+            gst_number: { type: "string" },
+            recipient_name: { type: "string" },
+            recipient_address: { type: "string" },
+            recipient_gst: { type: "string" },
+            line_items: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  description: { type: "string" },
+                  quantity: { type: "number" },
+                  unit_price: { type: "number" },
+                  tax_rate: { type: "number" },
+                  total: { type: "number" }
+                }
               }
-            }
-          },
-          subtotal: { type: "number" },
-          tax_total: { type: "number" },
-          grand_total: { type: "number" },
-          currency: { type: "string" },
-          invoice_date: { type: "string" },
-          due_date: { type: "string" },
-          ai_suggestions: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                field: { type: "string" },
-                issue: { type: "string" },
-                suggestion: { type: "string" },
-                severity: { type: "string" }
+            },
+            subtotal: { type: "number" },
+            tax_total: { type: "number" },
+            grand_total: { type: "number" },
+            currency: { type: "string" },
+            invoice_date: { type: "string" },
+            due_date: { type: "string" },
+            ai_suggestions: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  field: { type: "string" },
+                  issue: { type: "string" },
+                  suggestion: { type: "string" },
+                  severity: { type: "string" }
+                }
               }
             }
           }
         }
+      });
+
+      if (!result || !result.line_items) {
+        throw new Error('Invalid response from AI');
       }
-    });
 
-    setInvoice(prev => ({
-      ...prev,
-      ...result,
-      invoice_number: prev.invoice_number,
-      status: 'draft',
-    }));
+      const recalcSubtotal = result.line_items.reduce((sum, it) => sum + (Number(it.quantity ?? 0) * Number(it.unit_price ?? 0)), 0);
+      const recalcTax = result.line_items.reduce((sum, it) => {
+        const base = Number(it.quantity ?? 0) * Number(it.unit_price ?? 0);
+        return sum + (base * (Number(it.tax_rate ?? 18)) / 100);
+      }, 0);
 
-    setChatMessages(prev => [...prev, {
-      role: 'ai',
-      content: `Invoice generated for ${result.recipient_name || 'recipient'} — ₹${(result.grand_total || 0).toLocaleString('en-IN')}. Review the form below and save when ready.`
-    }]);
-    setIsGenerating(false);
-    setMode('form');
+      setInvoice(prev => ({
+        ...prev,
+        ...result,
+        line_items: result.line_items.map(it => ({
+          ...it,
+          total: Number(it.quantity ?? 0) * Number(it.unit_price ?? 0),
+        })),
+        subtotal: recalcSubtotal,
+        tax_total: recalcTax,
+        grand_total: recalcSubtotal + recalcTax,
+        invoice_number: prev.invoice_number,
+        status: 'draft',
+      }));
+
+      setChatMessages(prev => [...prev, {
+        role: 'ai',
+        content: `Invoice generated for ${result.recipient_name || 'recipient'} — ₹${(recalcSubtotal + recalcTax).toLocaleString('en-IN')}. Review the form below and save when ready.`
+      }]);
+      setMode('form');
+    } catch (err) {
+      console.error('Invoice generation failed:', err);
+      toast.error('Failed to generate invoice. Please try again.');
+      setChatMessages(prev => [...prev, {
+        role: 'ai',
+        content: 'Sorry, I couldn\'t generate the invoice. Please try again.'
+      }]);
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleValidate = async () => {
