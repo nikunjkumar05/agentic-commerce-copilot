@@ -35,6 +35,38 @@ export const db = {
     isAuthenticated: async () => !!localStorage.getItem('app_access_token'),
     me: async () => {
       try { return await fetchApi('/auth/me'); } catch { return null; }
+    },
+    loginViaEmailPassword: async (email, password) => {
+      const data = await fetchApi('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password })
+      });
+      if (data.access_token) localStorage.setItem('app_access_token', data.access_token);
+      return data;
+    },
+    loginWithProvider: (provider, redirectUrl) => {
+      console.warn("OAuth providers not supported in hackathon backend");
+    },
+    register: async ({ email, password }) => {
+      return fetchApi('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ email, password })
+      });
+    },
+    verifyOtp: async ({ email, otpCode }) => {
+      // For hackathon: Auto-login on fake OTP verify
+      const data = await fetchApi('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password: '123' }) // We don't have the password here, so we will actually just mock it or rely on the fact that we can tweak the backend
+      });
+      return data;
+    },
+    resendOtp: async (email) => {
+      console.log('Mock OTP sent to', email);
+      return true;
+    },
+    setToken: (token) => {
+      localStorage.setItem('app_access_token', token);
     }
   }
 };

@@ -31,7 +31,12 @@ export default function Register() {
     setLoading(true);
     try {
       await db.auth.register({ email, password });
-      setShowOtp(true);
+      // Hackathon shortcut: Login immediately after registering
+      const loginData = await db.auth.loginViaEmailPassword(email, password);
+      if (loginData?.access_token) {
+        db.auth.setToken(loginData.access_token);
+        window.location.href = "/";
+      }
     } catch (err) {
       setError(err.message || "Registration failed");
     } finally {
