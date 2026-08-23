@@ -1,0 +1,47 @@
+{
+  "name": "AgentAuditLog",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "settlement",
+        "delegation_created",
+        "delegation_revoked",
+        "validation"
+      ],
+      "description": "Type of agent action"
+    },
+    "invoice_id": {
+      "type": "string",
+      "description": "Related invoice ID"
+    },
+    "invoice_number": {
+      "type": "string",
+      "description": "Related invoice number for display"
+    },
+    "amount": {
+      "type": "number",
+      "description": "Amount involved in the action"
+    },
+    "agent_address": {
+      "type": "string",
+      "description": "Agent wallet address"
+    },
+    "owner_address": {
+      "type": "string",
+      "description": "Owner wallet address"
+    },
+    "tx_hash": {
+      "type": "string",
+      "description": "Blockchain transaction hash"
+    },
+    "details": {
+      "type": "string",
+      "description": "Additional details about the action"
+    }
+  },
+  "required": [
+    "action"
+  ]
+}

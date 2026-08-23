@@ -1,0 +1,196 @@
+{
+  "name": "Invoice",
+  "type": "object",
+  "properties": {
+    "invoice_number": {
+      "type": "string",
+      "description": "Auto-generated invoice number (INV-YYYY-NNNN)"
+    },
+    "institution_name": {
+      "type": "string",
+      "description": "Name of the issuing institution"
+    },
+    "institution_address": {
+      "type": "string",
+      "description": "Address of the issuing institution"
+    },
+    "gst_number": {
+      "type": "string",
+      "description": "GST number of the issuing institution"
+    },
+    "recipient_name": {
+      "type": "string",
+      "description": "Name of the invoice recipient"
+    },
+    "recipient_address": {
+      "type": "string",
+      "description": "Address of the recipient"
+    },
+    "recipient_gst": {
+      "type": "string",
+      "description": "GST number of the recipient"
+    },
+    "line_items": {
+      "type": "array",
+      "description": "Invoice line items",
+      "items": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "number"
+          },
+          "unit_price": {
+            "type": "number"
+          },
+          "tax_rate": {
+            "type": "number"
+          },
+          "total": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "subtotal": {
+      "type": "number",
+      "description": "Subtotal before tax"
+    },
+    "tax_total": {
+      "type": "number",
+      "description": "Total tax amount"
+    },
+    "grand_total": {
+      "type": "number",
+      "description": "Grand total including tax"
+    },
+    "currency": {
+      "type": "string",
+      "enum": [
+        "INR",
+        "USD",
+        "ETH",
+        "USDC"
+      ],
+      "default": "INR"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "validated",
+        "stored",
+        "paid",
+        "anomaly"
+      ],
+      "default": "draft"
+    },
+    "cid": {
+      "type": "string",
+      "description": "Filecoin/IPFS CID after storage"
+    },
+    "tx_hash": {
+      "type": "string",
+      "description": "Blockchain transaction hash after payment"
+    },
+    "ai_suggestions": {
+      "type": "array",
+      "description": "AI-generated suggestions and issues",
+      "items": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "suggestion": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warning",
+              "error"
+            ]
+          }
+        }
+      }
+    },
+    "compliance_score": {
+      "type": "number",
+      "description": "AI compliance score 0-100"
+    },
+    "payment_method": {
+      "type": "string",
+      "enum": [
+        "x402",
+        "mpp",
+        "erc8004",
+        "manual"
+      ],
+      "description": "Payment method used"
+    },
+    "milestones": {
+      "type": "array",
+      "description": "Payment milestones",
+      "items": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "number"
+          },
+          "due_date": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "released",
+              "disputed"
+            ]
+          },
+          "recipients": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "address": {
+                  "type": "string"
+                },
+                "percentage": {
+                  "type": "number"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "invoice_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "due_date": {
+      "type": "string",
+      "format": "date"
+    }
+  },
+  "required": [
+    "invoice_number",
+    "institution_name",
+    "recipient_name",
+    "grand_total"
+  ]
+}
