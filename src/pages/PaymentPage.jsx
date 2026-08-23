@@ -99,24 +99,52 @@ export default function PaymentPage() {
 
   const handleAgentSettle = async () => {
     if (!delegation || !invoice) return;
-    if (invoice.grand_total > delegation.maxAmount) {
-      toast.error('Amount exceeds delegation limit');
-      return;
-    }
     setIsProcessing(true);
-    await new Promise(r => setTimeout(r, 3000));
-    const txHash = generateTxHash();
-    await db.entities.Invoice.update(id, { tx_hash: txHash, status: 'paid', payment_method: 'erc8004' });
-    await db.entities.AgentAuditLog.create({
-      action: 'settlement', invoice_id: id, invoice_number: invoice.invoice_number,
-      amount: invoice.grand_total, tx_hash: txHash,
-      agent_address: delegation.agentAddress, owner_address: delegation.ownerAddress,
-      details: 'ERC-8004 autonomous agent settlement',
-    });
-    queryClient.invalidateQueries({ queryKey: ['invoice', id] });
-    setReceipt({ txHash, method: 'ERC-8004 Agent', amount: formatCurrency(invoice.grand_total, invoice.currency), network: 'Optimism Sepolia' });
+    
+    try {
+      const token = localStorage.getItem('app_access_token');
+      const res = await fetch('/api/agent/settle', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token && { Authorization: \`Bearer \${token}\` })
+        },
+        body: JSON.stringify({
+          invoice_id: id,
+          delegation_max: delegation.maxAmount
+        })
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        if (res.status === 403) {
+          // Graceful Failure!
+          toast.error(data.message || 'Agent Out of Bounds: Human review required.', { duration: 5000 });
+        } else {
+          toast.error('Agent encountered an error.');
+        }
+        setIsProcessing(false);
+        return;
+      }
+
+      // Success!
+      toast.success('Agent settled invoice autonomously via Razorpay!');
+      
+      setReceipt({ 
+        txHash: data.order.id, 
+        method: 'Razorpay Route (Autonomous)', 
+        amount: formatCurrency(invoice.grand_total, invoice.currency), 
+        network: 'Razorpay Testnet' 
+      });
+      
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] });
+
+    } catch (err) {
+      console.error(err);
+      toast.error('Agent settlement failed.');
+    }
     setIsProcessing(false);
-    toast.success('Agent settled invoice autonomously!');
   };
 
   const revokeDelegation = () => {
