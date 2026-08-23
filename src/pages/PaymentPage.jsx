@@ -107,7 +107,7 @@ export default function PaymentPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(token && { Authorization: \`Bearer \${token}\` })
+          ...(token && { Authorization: `Bearer ${token}` })
         },
         body: JSON.stringify({
           invoice_id: id,

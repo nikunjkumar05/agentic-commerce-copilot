@@ -322,7 +322,7 @@ app.post('/api/agent/settle', authMiddleware, async (req, res) => {
     await query(`
       INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, details)
       VALUES ($1,$2,$3,$4,$5,$6,$7)
-    `, [uuidv4(), req.user.id, 'order_created', invoice_id, invoice.invoice_number, invoice.grand_total, \`Razorpay Order \${order.id} generated autonomously.\`]);
+    `, [uuidv4(), req.user.id, 'order_created', invoice_id, invoice.invoice_number, invoice.grand_total, `Razorpay Order ${order.id} generated autonomously.`]);
 
     res.json({ success: true, order });
   } catch (err) {
@@ -351,7 +351,7 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
         await query(`
           INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, details)
           VALUES ($1,$2,$3,$4,$5,$6,$7)
-        `, [uuidv4(), inv.user_id, 'settlement_captured', inv.id, receipt, inv.grand_total, \`Webhook confirmed payment captured via Razorpay Route.\`]);
+        `, [uuidv4(), inv.user_id, 'settlement_captured', inv.id, receipt, inv.grand_total, `Webhook confirmed payment captured via Razorpay Route.`]);
       }
     }
   }
