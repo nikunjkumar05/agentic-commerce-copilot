@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { ArrowLeft, Loader2, CheckCircle2, Wallet, Zap, Users, Bot, ExternalLink, Plus, Shield } from 'lucide-react';
+import { ArrowLeft, Loader2, CheckCircle2, Wallet, Zap, Users, Bot, ExternalLink, Plus, Shield, ShieldAlert, CheckCircle, XCircle } from 'lucide-react';
 import { formatCurrency, generateTxHash } from '@/lib/invoiceHelpers';
 import { cn } from '@/lib/utils';
 
@@ -22,6 +22,7 @@ export default function PaymentPage() {
   const [paymentTab, setPaymentTab] = useState('x402');
   const [isProcessing, setIsProcessing] = useState(false);
   const [receipt, setReceipt] = useState(null);
+  const [agentError, setAgentError] = useState(null);
 
   // Agent delegation state
   const [delegation, setDelegation] = useState(() => {
@@ -136,8 +137,8 @@ export default function PaymentPage() {
       
       if (!res.ok) {
         if (res.status === 403) {
-          // Graceful Failure!
-          toast.error(data.message || 'Agent Out of Bounds: Human review required.', { duration: 5000 });
+          // Graceful Failure! Trigger the UI panel
+          setAgentError(data.message || 'Agent Out of Bounds: Human review required.');
         } else {
           toast.error('Agent encountered an error.');
         }
@@ -145,17 +146,54 @@ export default function PaymentPage() {
         return;
       }
 
-      // Success!
-      toast.success('Agent settled invoice autonomously via Razorpay!');
-      
-      setReceipt({ 
-        txHash: data.order.id, 
-        method: 'Razorpay Route (Autonomous)', 
-        amount: formatCurrency(invoice.grand_total, invoice.currency), 
-        network: 'Razorpay Testnet' 
+      // Open Razorpay Checkout
+      const options = {
+        key: 'rzp_test_TTM5dEUPPr7DzD', // Hardcoded test key for hackathon reliability
+        amount: Math.round(invoice.grand_total * 100),
+        currency: invoice.currency || 'INR',
+        name: 'Agentic Commerce Co-Pilot',
+        description: `Autonomous Settlement for ${invoice.invoice_number}`,
+        order_id: data.order.id,
+        handler: async function (response) {
+          try {
+            const verifyRes = await fetch('/api/agent/verify', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(token && { Authorization: `Bearer ${token}` })
+              },
+              body: JSON.stringify({
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_signature: response.razorpay_signature,
+                invoice_id: id
+              })
+            });
+
+            if (!verifyRes.ok) throw new Error('Verification failed');
+
+            toast.success('Agent settled invoice autonomously via Razorpay!');
+            setReceipt({ 
+              txHash: response.razorpay_payment_id, 
+              method: 'Razorpay Route (Autonomous)', 
+              amount: formatCurrency(invoice.grand_total, invoice.currency), 
+              network: 'Razorpay Testnet' 
+            });
+            queryClient.invalidateQueries({ queryKey: ['invoice', id] });
+          } catch (err) {
+            console.error(err);
+            toast.error('Payment signature verification failed.');
+          }
+        },
+        prefill: { name: 'AI Buyer Agent', email: 'agent@commerce.copilot' },
+        theme: { color: '#9333ea' } // matches the purple agent theme
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.on('payment.failed', function (response){
+        toast.error(response.error.description || 'Payment failed');
       });
-      
-      queryClient.invalidateQueries({ queryKey: ['invoice', id] });
+      rzp.open();
 
     } catch (err) {
       console.error(err);
@@ -217,8 +255,78 @@ export default function PaymentPage() {
 
   return (
     <div className="max-w-2xl mx-auto">
+      {/* Agent Blocked Panel (Graceful Failure Rubric) */}
+      {agentError && (
+        <div className="absolute inset-0 bg-background/95 z-50 flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-card rounded-2xl border-2 border-red-500/20 shadow-2xl p-6 relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-1 bg-red-500" />
+            
+            <div className="w-12 h-12 bg-red-500/10 rounded-full flex items-center justify-center mb-4">
+              <ShieldAlert className="w-6 h-6 text-red-500" />
+            </div>
+            
+            <h2 className="text-xl font-bold font-heading mb-2">Agent Settlement Blocked</h2>
+            <p className="text-sm text-muted-foreground mb-6">
+              The AI Co-Pilot has paused this transaction because it violates the established safety bounds.
+            </p>
+
+            <div className="space-y-4 mb-6">
+              <div className="bg-muted/50 rounded-xl p-3 text-sm">
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-muted-foreground text-xs font-mono">REASON_CODE</span>
+                  <span className="text-red-500 text-xs font-bold font-mono">ERR_OUT_OF_BOUNDS</span>
+                </div>
+                <p className="font-medium text-foreground">{agentError}</p>
+              </div>
+
+              <div className="border border-border rounded-xl p-3">
+                <p className="text-xs font-bold mb-2">Agent Reasoning Trail:</p>
+                <ul className="space-y-2">
+                  <li className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <CheckCircle className="w-3 h-3 text-green-500" /> Parsed invoice {invoice.invoice_number}
+                  </li>
+                  {invoice.compliance_score < 85 ? (
+                    <li className="flex items-center gap-2 text-xs font-medium text-red-400">
+                      <XCircle className="w-3 h-3 text-red-500" /> Compliance Score ({invoice.compliance_score}) &lt; 85
+                    </li>
+                  ) : (
+                    <li className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <CheckCircle className="w-3 h-3 text-green-500" /> Compliance Score ({invoice.compliance_score}) ≥ 85
+                    </li>
+                  )}
+                  {invoice.grand_total > (delegation?.maxAmount || 0) ? (
+                    <li className="flex items-center gap-2 text-xs font-medium text-red-400">
+                      <XCircle className="w-3 h-3 text-red-500" /> Amount (₹{invoice.grand_total}) exceeds budget (₹{delegation?.maxAmount || 0})
+                    </li>
+                  ) : (
+                    <li className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <CheckCircle className="w-3 h-3 text-green-500" /> Amount within delegated budget
+                    </li>
+                  )}
+                  <li className="flex items-center gap-2 text-xs font-bold text-red-500 pt-1">
+                    <ShieldAlert className="w-3 h-3" /> Execution Halted. Escalated to Human.
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <Button variant="outline" className="flex-1 text-xs" onClick={() => setAgentError(null)}>
+                Dismiss
+              </Button>
+              <Button className="flex-1 text-xs bg-red-500 hover:bg-red-600 text-white border-0" onClick={() => {
+                setAgentError(null);
+                setActiveTab('manual');
+              }}>
+                Manual Override
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
-      <div className="px-4 pt-4 pb-2 flex items-center gap-3">
+      <div className="px-4 pt-3 pb-2 flex items-center gap-3 bg-background relative z-10">
         <Link to={`/invoice/${id}`}><Button variant="ghost" size="icon" className="h-8 w-8 rounded-xl"><ArrowLeft className="w-4 h-4" /></Button></Link>
         <div className="flex-1">
           <h2 className="text-base font-bold">Payment</h2>

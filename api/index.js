@@ -320,7 +320,7 @@ app.post('/api/audit-logs', authMiddleware, async (req, res) => {
   res.status(201).json(result.rows[0]);
 });
 
-import { createAgentSettlementOrder, verifyWebhookSignature } from './razorpay.js';
+import { createAgentSettlementOrder, verifyWebhookSignature, verifySignature } from './razorpay.js';
 
 // --- Razorpay Agentic Commerce ---
 app.post('/api/agent/settle', authMiddleware, async (req, res) => {
@@ -355,6 +355,36 @@ app.post('/api/agent/settle', authMiddleware, async (req, res) => {
     console.error(err);
     res.status(500).json({ error: 'payment_error', message: 'Failed to create Razorpay Order' });
   }
+});
+
+app.post('/api/agent/verify', authMiddleware, async (req, res) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, invoice_id } = req.body;
+
+  const isValid = verifySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature);
+  if (!isValid) {
+    return res.status(400).json({ error: 'invalid_signature', message: 'Payment verification failed' });
+  }
+
+  const invoiceRes = await query('SELECT * FROM invoices WHERE id = $1 AND user_id = $2', [invoice_id, req.user.id]);
+  if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
+  const invoice = invoiceRes.rows[0];
+
+  // Update invoice status
+  await query(
+    "UPDATE invoices SET status = 'paid', tx_hash = $1, payment_method = 'razorpay_agent', updated_date = NOW() WHERE id = $2", 
+    [razorpay_payment_id, invoice_id]
+  );
+
+  // Log successful agent payment
+  await query(`
+    INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, tx_hash, details)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+  `, [
+    uuidv4(), req.user.id, 'settlement_captured', invoice_id, invoice.invoice_number, 
+    invoice.grand_total, razorpay_payment_id, 'Agent successfully verified and settled payment via Razorpay Checkout.'
+  ]);
+
+  res.json({ success: true, message: 'Payment verified successfully' });
 });
 
 app.post('/api/webhooks/razorpay', async (req, res) => {
@@ -440,7 +470,7 @@ async function callMistralAPI(prompt, schema) {
     model: MISTRAL_MODEL,
     messages,
     temperature: 0.2,
-    max_tokens: 500,
+    max_tokens: 800,
   };
 
   // Don't use response_format:json_object — many free models don't support it.

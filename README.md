@@ -1,17 +1,17 @@
-# Agentic Commerce Co-Pilot 🤖💸
+# Agentic Commerce Co-Pilot
 
 **Razorpay AI Buildathon 2026 Submission**  
 **Track:** 01 — AI Growth & Agentic Commerce
 
 Agentic Commerce Co-Pilot is a next-generation platform designed to make merchants natively transactable by AI buyers. By bridging the gap between legacy invoices and the incoming wave of agent-to-agent commerce, this project enables AI agents to autonomously audit, approve, and settle B2B payments using Razorpay infrastructure.
 
-## 🚀 The Vision: Why Now?
+##  The Vision: Why Now?
 
 With the global protocol race (ACP, AP2, **x402**) and the rise of autonomous agents, B2B commerce is shifting from human-to-human to agent-to-agent. 
 
 This platform acts as the bridge. It allows a business (e.g., a government institution or enterprise) to delegate a budget to an **ERC-8004 AI Agent**. This AI agent can then ingest vendor invoices, score them for compliance, and execute bounded, gated payments via Razorpay—entirely autonomously.
 
-## 🛠️ Key Features (Hitting the Track 01 Bar)
+##  Key Features (Hitting the Track 01 Bar)
 
 - **Agent-Readable Invoices:** Uses LLMs (via Mistral) to ingest traditional invoices and convert them into structured, agent-readable JSON.
 - **ERC-8004 Agent Delegation:** Businesses set strict bounds (e.g., Maximum ₹100,000, 30-day expiry) on their autonomous agents.
@@ -26,7 +26,7 @@ This platform acts as the bridge. It allows a business (e.g., a government insti
 - **AI / LLM:** Mistral API (mistral-large-latest)
 - **Payments:** Razorpay Test APIs
 
-## 🚦 Getting Started
+##  Getting Started
 
 ### Prerequisites
 - Node.js (v18+)
@@ -74,7 +74,7 @@ This platform acts as the bridge. It allows a business (e.g., a government insti
    - Go to an invoice, navigate to the **Payment** tab, and configure your AI Agent's budget delegation.
    - Run the Agent Settlement to see the autonomous Razorpay checkout flow in action!
 
-## 🔐 Architecture Notes (Audit & Explainability)
+## Architecture Notes (Audit & Explainability)
 
 In compliance with the track rubric, the `agent_audit_logs` table maintains a strictly append-only record of all agent interactions. The system natively handles exceptions—such as AI hallucination or out-of-bounds payment requests—by failing closed and enforcing human-in-the-loop (HITL) manual checkout.
 
