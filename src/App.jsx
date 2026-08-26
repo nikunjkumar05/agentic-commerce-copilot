@@ -20,6 +20,9 @@ import PaymentPage from '@/pages/PaymentPage';
 import StoragePage from '@/pages/StoragePage';
 import SettingsPage from '@/pages/SettingsPage';
 import AgentChat from '@/pages/AgentChat';
+import SimulationTheater from '@/pages/SimulationTheater';
+import AuditTrailPage from '@/pages/AuditTrailPage';
+import DemoPage from '@/pages/DemoPage';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -50,11 +53,14 @@ const AuthenticatedApp = () => {
       <Route path="/register" element={<Register />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/demo" element={<DemoPage />} />
       
       <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
         <Route element={<AppLayout />}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/agent-chat" element={<AgentChat />} />
+          <Route path="/simulation" element={<SimulationTheater />} />
+          <Route path="/audit" element={<AuditTrailPage />} />
           <Route path="/invoice/new" element={<NewInvoice />} />
           <Route path="/invoice/:id" element={<InvoiceDetail />} />
           <Route path="/invoice/:id/pay" element={<PaymentPage />} />

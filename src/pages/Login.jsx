@@ -111,6 +111,12 @@ export default function Login() {
             />
           </div>
         </div>
+        
+        <Link to="/demo">
+          <Button type="button" variant="outline" className="w-full h-12 font-medium bg-primary/5 text-primary border-primary/20 hover:bg-primary/10 mb-3">
+            Skip Login & Try Live Demo
+          </Button>
+        </Link>
         <Button type="submit" className="w-full h-12 font-medium bg-accent hover:bg-accent/90 text-accent-foreground border-0" disabled={loading}>
           {loading ? (
             <>
