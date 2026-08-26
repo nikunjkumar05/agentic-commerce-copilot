@@ -350,45 +350,22 @@ app.delete('/api/invoices/:id', authMiddleware, async (req, res) => {
 app.post('/api/ipfs/upload', authMiddleware, async (req, res) => {
   try {
     const LIGHTHOUSE_API_KEY = process.env.LIGHTHOUSE_API_KEY || 'bc2e8494.ba6f3cae282f465f913ab6b4b8aeaf76';
-    const payload = req.body;
+    const payload = JSON.stringify(req.body, null, 2);
     
-    // Lighthouse expects a file or a string. We can upload a string Buffer.
-    const formData = new FormData();
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    formData.append('file', blob, 'invoice.json');
-
-    // DEMO SAFEGUARD: 3.5s timeout so a bad network doesn't ruin a live pitch
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-    const response = await fetch('https://node.lighthouse.storage/api/v0/add', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${LIGHTHOUSE_API_KEY}` },
-      body: formData,
-      signal: controller.signal
-    });
+    // Dynamic import to avoid breaking top-level if SDK isn't found
+    const { default: lighthouse } = await import('@lighthouse-web3/sdk');
     
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`Lighthouse API error: ${response.status}`);
+    const response = await lighthouse.uploadText(payload, LIGHTHOUSE_API_KEY, "invoice.json");
+    
+    if (!response || !response.data || !response.data.Hash) {
+      throw new Error(`Invalid response from Lighthouse SDK`);
     }
     
-    const data = await response.json();
-    res.json({ cid: data.Hash, gatewayUrl: `https://gateway.lighthouse.storage/ipfs/${data.Hash}` });
+    const cid = response.data.Hash;
+    res.json({ cid: cid, gatewayUrl: `https://gateway.lighthouse.storage/ipfs/${cid}` });
   } catch (err) {
-    console.warn('IPFS Network Error (falling back to mock CID to save demo):', err.message);
-    
-    // Generates a convincing fake CID so the UI still looks perfectly functional
-    const crypto = await import('crypto');
-    const mockHash = crypto.createHash('sha256').update(JSON.stringify(req.body)).digest('base64url').replace(/[^a-zA-Z0-9]/g, '');
-    const mockCid = 'Qm' + mockHash.padEnd(44, 'a').substring(0, 44);
-    
-    res.json({ 
-      cid: mockCid, 
-      gatewayUrl: `https://gateway.lighthouse.storage/ipfs/${mockCid}`,
-      _demo_fallback: true
-    });
+    console.error('IPFS Upload Error:', err.message);
+    res.status(500).json({ error: 'ipfs_upload_failed', message: 'Failed to store document on IPFS' });
   }
 });
 
