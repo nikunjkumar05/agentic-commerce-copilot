@@ -400,7 +400,8 @@ import { createAgentSettlementOrder, verifyWebhookSignature, verifySignature } f
 // --- Razorpay Agentic Commerce ---
 app.post('/api/agent/settle', authMiddleware, async (req, res) => {
   const { invoice_id, delegation_max } = req.body;
-  const invoiceRes = await query('SELECT * FROM invoices WHERE id = $1 AND user_id = $2', [invoice_id, req.user.id]);
+  // Allow lookup by either UUID or human-readable invoice_number
+  const invoiceRes = await query('SELECT * FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [invoice_id, req.user.id]);
   if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invoiceRes.rows[0];
 
@@ -410,7 +411,7 @@ app.post('/api/agent/settle', authMiddleware, async (req, res) => {
     // GRACEFUL FAILURE: Log it, block it
     await appendAuditLog(req.user.id, {
       action: 'settlement_blocked',
-      invoice_id: invoice_id,
+      invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,
       amount: invoice.grand_total,
       details: 'Agent Out of Bounds: Score too low or amount too high. Escalated to human.'
@@ -424,9 +425,11 @@ app.post('/api/agent/settle', authMiddleware, async (req, res) => {
     const taxAmount = invoice.tax_total || 0;
     const order = await createAgentSettlementOrder(invoice.grand_total, invoice.invoice_number, taxAmount);
     
+    await query('UPDATE invoices SET status = $1 WHERE id = $2 AND user_id = $3', ['pending', invoice.id, req.user.id]);
+
     await appendAuditLog(req.user.id, {
       action: 'order_created',
-      invoice_id: invoice_id,
+      invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,
       amount: invoice.grand_total,
       details: `Razorpay Order ${order.id} generated autonomously.`
@@ -441,7 +444,8 @@ app.post('/api/agent/settle', authMiddleware, async (req, res) => {
 
 app.post('/api/agent/auto-settle', authMiddleware, async (req, res) => {
   const { invoice_id, delegation_max } = req.body;
-  const invoiceRes = await query('SELECT * FROM invoices WHERE id = $1 AND user_id = $2', [invoice_id, req.user.id]);
+  // Allow lookup by either UUID or human-readable invoice_number
+  const invoiceRes = await query('SELECT * FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [invoice_id, req.user.id]);
   if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invoiceRes.rows[0];
 
@@ -451,7 +455,7 @@ app.post('/api/agent/auto-settle', authMiddleware, async (req, res) => {
     // GRACEFUL FAILURE: Log it, block it
     await appendAuditLog(req.user.id, {
       action: 'settlement_blocked',
-      invoice_id: invoice_id,
+      invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,
       amount: invoice.grand_total,
       details: 'Agent Out of Bounds: Score too low or amount too high. Escalated to human.'
@@ -467,11 +471,11 @@ app.post('/api/agent/auto-settle', authMiddleware, async (req, res) => {
     const order = await createAgentSettlementOrder(invoice.grand_total, invoice.invoice_number, taxAmount);
 
     // 2. Update to 'paid' linking the REAL Razorpay Order ID as the TX Hash
-    await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3 AND user_id = $4', ['paid', order.id, invoice_id, req.user.id]);
+    await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3 AND user_id = $4', ['paid', order.id, invoice.id, req.user.id]);
     
     await appendAuditLog(req.user.id, {
       action: 'settlement_auto',
-      invoice_id: invoice_id,
+      invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,
       amount: invoice.grand_total,
       details: `Autonomous S2S capture successful. Razorpay Order ${order.id} generated & authorized via virtual token.`
