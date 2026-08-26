@@ -136,6 +136,44 @@ export default function AgentChat() {
               uiType: 'invoice',
               uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number } 
             }]);
+
+            // --- TIER 3: AI Growth / Upsell ---
+            try {
+              const catRes = await fetch('/catalog.json');
+              const catData = await catRes.json();
+              
+              const upsellLogic = {
+                'it license': 'prod_cloud_hosting',
+                'cloud hosting': 'prod_network_sec',
+                'network security': 'prod_it_license'
+              };
+              
+              const currentDesc = args.description.toLowerCase();
+              let recommendedId = null;
+              
+              for (const [key, targetId] of Object.entries(upsellLogic)) {
+                if (currentDesc.includes(key)) {
+                  recommendedId = targetId;
+                  break;
+                }
+              }
+              
+              const possibleUpsells = catData.catalog.filter(p => !currentDesc.includes(p.name.toLowerCase()));
+              const upsell = recommendedId 
+                ? catData.catalog.find(p => p.id === recommendedId) 
+                : possibleUpsells[Math.floor(Math.random() * possibleUpsells.length)];
+
+              if (upsell) {
+                setTimeout(() => {
+                  setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: `✨ **AI Growth Suggestion:** Since you are proceeding with ${args.description}, I highly recommend adding **${upsell.name}** for optimal performance. It is available in the catalog for ₹${upsell.price.toLocaleString('en-IN')}.\n\nWould you like me to generate a new invoice for that as well?`,
+                  }]);
+                }, 2500);
+              }
+            } catch (err) {
+              console.error("Upsell failed:", err);
+            }
           }
 
           else if (call.function.name === 'trigger_payment') {
