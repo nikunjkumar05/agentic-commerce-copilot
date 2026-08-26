@@ -93,6 +93,9 @@ export const db = {
   integrations: {
     Core: {
       InvokeLLM: async (data) => fetchApi('/llm/invoke', { method: 'POST', body: JSON.stringify(data) })
+    },
+    Agent: {
+      autoSettle: async (data) => fetchApi('/agent/auto-settle', { method: 'POST', body: JSON.stringify(data) })
     }
   }
 };

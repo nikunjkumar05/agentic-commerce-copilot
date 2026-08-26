@@ -186,14 +186,33 @@ export default function AgentChat() {
               continue;
             }
 
-            setMessages(prev => [...prev, {
-              role: 'assistant',
-              content: `Payment routed successfully. Redirecting to settlement page...`,
-              uiType: 'payment_done',
-              uiData: { id: targetId }
-            }]);
+            // Grab delegation logic
+            const delegation = JSON.parse(localStorage.getItem('agent_delegation') || 'null');
+            const delegation_max = delegation ? delegation.maxAmount : 0;
 
-            setTimeout(() => navigate(`/invoice/${targetId}/pay`), 2000);
+            try {
+              // --- TIER 3: TRUE SERVER-TO-SERVER AUTO PAY ---
+              await db.integrations.Agent.autoSettle({ invoice_id: targetId, delegation_max });
+              
+              setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ **Payment Authorized:** Invoice has been autonomously settled via Server-to-Server API without any human UI popup. The ledger has been cryptographically updated.`,
+                uiType: 'payment_done',
+                uiData: { id: targetId }
+              }]);
+              
+            } catch (err) {
+              // Usually out of bounds or network error
+              setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: `🚨 **Agent Blocked:** I cannot settle this autonomously (either compliance score is too low, or it exceeds my delegation limit of ₹${delegation_max.toLocaleString('en-IN')}). Escalating to human checkout...`,
+                uiType: 'payment_blocked',
+                uiData: { id: targetId }
+              }]);
+              
+              // Escalate gracefully to the standard human flow
+              setTimeout(() => navigate(`/invoice/${targetId}/pay`), 3500);
+            }
           }
         }
       } else {
