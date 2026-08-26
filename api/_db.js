@@ -72,5 +72,19 @@ export async function initDb() {
       public_settings JSONB DEFAULT '{}',
       created_at TIMESTAMP DEFAULT NOW()
     );
+
+    DO $$ 
+    BEGIN 
+      BEGIN
+        ALTER TABLE audit_logs ADD COLUMN hash TEXT;
+      EXCEPTION
+        WHEN duplicate_column THEN null;
+      END;
+      BEGIN
+        ALTER TABLE audit_logs ADD COLUMN prev_hash TEXT;
+      EXCEPTION
+        WHEN duplicate_column THEN null;
+      END;
+    END $$;
   `);
 }

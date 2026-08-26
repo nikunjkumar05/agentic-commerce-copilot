@@ -6,9 +6,45 @@ import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import { query, initDb } from './_db.js';
 import { generateToken, authMiddleware } from './_auth.js';
-// NVIDIA AI via OpenAI-compatible API
+import crypto from 'crypto';
 
 const app = express();
+
+export async function appendAuditLog(userId, data) {
+  const id = uuidv4();
+  
+  // 1. Get previous hash for the chain
+  const lastLog = await query(
+    'SELECT hash FROM audit_logs WHERE user_id = $1 ORDER BY created_date DESC LIMIT 1',
+    [userId]
+  );
+  const prev_hash = lastLog.rows.length > 0 && lastLog.rows[0].hash ? lastLog.rows[0].hash : '0'.repeat(64);
+  
+  // 2. Compute SHA-256 of payload + prev_hash
+  const timestamp = data.created_date || new Date().toISOString();
+  const payload = JSON.stringify({
+    user_id: userId,
+    action: data.action,
+    invoice_id: data.invoice_id || null,
+    amount: data.amount || null,
+    prev_hash: prev_hash,
+    timestamp: timestamp
+  });
+  const hash = crypto.createHash('sha256').update(payload).digest('hex');
+
+  // 3. Store hash and prev_hash
+  await query(`
+    INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount,
+      agent_address, owner_address, tx_hash, details, created_date, hash, prev_hash)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+  `, [
+    id, userId, data.action, data.invoice_id || null, data.invoice_number || null,
+    data.amount || null, data.agent_address || null, data.owner_address || null, data.tx_hash || null, data.details,
+    timestamp, hash, prev_hash
+  ]);
+
+  return id;
+}
 
 app.use(cors({ origin: true, credentials: true, allowedHeaders: ['Content-Type', 'Authorization', 'X-App-Id'] }));
 app.use(express.json({ limit: '5mb' }));
@@ -64,15 +100,14 @@ async function seedDemoData(userId) {
   ];
 
   for (const log of auditActions) {
-    await query(`
-      INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, tx_hash, details, created_date)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-    `, [
-      uuidv4(), userId, log.action,
-      null, log.invNo || null, log.amount || null, log.tx || null,
-      `${log.action} processed for invoice ${log.invNo || 'N/A'}`,
-      new Date(now.getTime() - Math.random()*30*86400000).toISOString(),
-    ]);
+    await appendAuditLog(userId, {
+      action: log.action,
+      invoice_number: log.invNo,
+      amount: log.amount,
+      tx_hash: log.tx,
+      details: `${log.action} processed for invoice ${log.invNo || 'N/A'}`,
+      created_date: new Date(now.getTime() - Math.random()*30*86400000).toISOString()
+    });
   }
 
   console.log('Demo data seeded');
@@ -172,6 +207,32 @@ app.post('/api/auth/login', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'internal_error', message: 'Something went wrong' });
+  }
+});
+
+app.post('/api/auth/demo', async (req, res) => {
+  try {
+    const email = 'demo@razorpay.hackathon';
+    let result = await query('SELECT * FROM users WHERE email = $1', [email]);
+    let user;
+    
+    if (result.rows.length === 0) {
+      const id = uuidv4();
+      const hashed = bcrypt.hashSync('demo123', 10);
+      await query(
+        'INSERT INTO users (id, email, password, name, is_verified) VALUES ($1, $2, $3, $4, 1)',
+        [id, email, hashed, 'Demo Judge']
+      );
+      result = await query('SELECT * FROM users WHERE email = $1', [email]);
+    }
+    user = result.rows[0];
+    
+    await seedDemoData(user.id);
+    const token = generateToken(user);
+    res.json({ access_token: token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'internal_error', message: 'Demo mode failed' });
   }
 });
 
@@ -306,16 +367,8 @@ app.get('/api/audit-logs', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/audit-logs', authMiddleware, async (req, res) => {
-  const id = uuidv4();
   const data = req.body;
-
-  await query(`
-    INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount,
-      agent_address, owner_address, tx_hash, details)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-  `, [id, req.user.id, data.action, data.invoice_id, data.invoice_number,
-      data.amount, data.agent_address, data.owner_address, data.tx_hash, data.details]);
-
+  const id = await appendAuditLog(req.user.id, data);
   const result = await query('SELECT * FROM audit_logs WHERE id = $1', [id]);
   res.status(201).json(result.rows[0]);
 });
@@ -332,10 +385,13 @@ app.post('/api/agent/settle', authMiddleware, async (req, res) => {
   // GATE 1 & 2: Explainable Risk & Bounded Budget
   if (invoice.compliance_score < 85 || invoice.grand_total > delegation_max) {
     // GRACEFUL FAILURE: Log it, block it
-    await query(`
-      INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, details)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
-    `, [uuidv4(), req.user.id, 'settlement_blocked', invoice_id, invoice.invoice_number, invoice.grand_total, 'Agent Out of Bounds: Score too low or amount too high. Escalated to human.']);
+    await appendAuditLog(req.user.id, {
+      action: 'settlement_blocked',
+      invoice_id: invoice_id,
+      invoice_number: invoice.invoice_number,
+      amount: invoice.grand_total,
+      details: 'Agent Out of Bounds: Score too low or amount too high. Escalated to human.'
+    });
     
     return res.status(403).json({ error: 'agent_out_of_bounds', message: 'Invoice exceeds autonomous bounds. Human review required.' });
   }
@@ -345,10 +401,13 @@ app.post('/api/agent/settle', authMiddleware, async (req, res) => {
     const taxAmount = invoice.tax_total || 0;
     const order = await createAgentSettlementOrder(invoice.grand_total, invoice.invoice_number, taxAmount);
     
-    await query(`
-      INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, details)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
-    `, [uuidv4(), req.user.id, 'order_created', invoice_id, invoice.invoice_number, invoice.grand_total, `Razorpay Order ${order.id} generated autonomously.`]);
+    await appendAuditLog(req.user.id, {
+      action: 'order_created',
+      invoice_id: invoice_id,
+      invoice_number: invoice.invoice_number,
+      amount: invoice.grand_total,
+      details: `Razorpay Order ${order.id} generated autonomously.`
+    });
 
     res.json({ success: true, order });
   } catch (err) {
@@ -376,13 +435,14 @@ app.post('/api/agent/verify', authMiddleware, async (req, res) => {
   );
 
   // Log successful agent payment
-  await query(`
-    INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, tx_hash, details)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-  `, [
-    uuidv4(), req.user.id, 'settlement_captured', invoice_id, invoice.invoice_number, 
-    invoice.grand_total, razorpay_payment_id, 'Agent successfully verified and settled payment via Razorpay Checkout.'
-  ]);
+  await appendAuditLog(req.user.id, {
+    action: 'settlement_captured',
+    invoice_id: invoice_id,
+    invoice_number: invoice.invoice_number,
+    amount: invoice.grand_total,
+    tx_hash: razorpay_payment_id,
+    details: 'Agent successfully verified and settled payment via Razorpay Checkout.'
+  });
 
   res.json({ success: true, message: 'Payment verified successfully' });
 });
@@ -404,10 +464,13 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
       const invRes = await query('SELECT id, user_id, grand_total FROM invoices WHERE invoice_number = $1', [receipt]);
       if (invRes.rows.length > 0) {
         const inv = invRes.rows[0];
-        await query(`
-          INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount, details)
-          VALUES ($1,$2,$3,$4,$5,$6,$7)
-        `, [uuidv4(), inv.user_id, 'settlement_captured', inv.id, receipt, inv.grand_total, `Webhook confirmed payment captured via Razorpay Route.`]);
+        await appendAuditLog(inv.user_id, {
+          action: 'settlement_captured',
+          invoice_id: inv.id,
+          invoice_number: receipt,
+          amount: inv.grand_total,
+          details: `Webhook confirmed payment captured via Razorpay Route.`
+        });
       }
     }
   }
@@ -526,7 +589,7 @@ function generateMockInvoice(prompt) {
     { name: 'Delhi Metro Rail Corporation', address: 'Metro Bhawan, Barakhamba Road, New Delhi - 110001', gst: '07AAADM7890F1Z6' },
   ];
   const recipients = [
-    { name: 'NSUT Delhi', address: 'Sector 3, Dwarka, New Delhi - 110078', gst: '07AAACN0372J1ZB' },
+    { name: 'RazorPay', address: 'Sector 3, Dwarka, New Delhi - 110078', gst: '07AAACN0372J1ZB' },
     { name: 'CPWD', address: 'Nirman Bhawan, New Delhi - 110011', gst: '07AAACP1111G1Z7' },
     { name: 'Delhi Police HQs', address: 'Police Headquarters, ITO, New Delhi - 110002', gst: '07AAADP2222H1Z8' },
     { name: 'Ministry of Home Affairs', address: 'North Block, New Delhi - 110001', gst: '07AAAMH3333I1Z9' },
