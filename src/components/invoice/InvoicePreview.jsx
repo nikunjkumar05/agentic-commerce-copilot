@@ -134,7 +134,7 @@ export default function InvoicePreview({ invoice }) {
           )}
           {invoice.tx_hash && (
             <span className="text-[10px] font-mono text-gray-400 bg-gray-50 px-2 py-1 rounded-lg border border-gray-100">
-              TX: {invoice.tx_hash?.slice(0, 10)}...
+              TX: {invoice.tx_hash}
             </span>
           )}
         </div>

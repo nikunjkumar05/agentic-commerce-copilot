@@ -193,11 +193,11 @@ export default function AgentChat() {
 
             try {
               // --- TIER 3: TRUE SERVER-TO-SERVER AUTO PAY ---
-              await db.integrations.Agent.autoSettle({ invoice_id: targetId, delegation_max });
+              const res = await db.integrations.Agent.autoSettle({ invoice_id: targetId, delegation_max });
               
               setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: `✅ **Payment Authorized:** Invoice has been autonomously settled via Server-to-Server API without any human UI popup. The ledger has been cryptographically updated.`,
+                content: `✅ **Payment Authorized:** Invoice has been autonomously settled via Server-to-Server API.\n\n**Razorpay TX ID:** \`${res.order_id}\`\n\nThe ledger has been cryptographically updated without any human intervention.`,
                 uiType: 'payment_done',
                 uiData: { id: targetId }
               }]);

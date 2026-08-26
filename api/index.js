@@ -464,8 +464,8 @@ app.post('/api/agent/auto-settle', authMiddleware, async (req, res) => {
     const taxAmount = invoice.tax_total || 0;
     const order = await createAgentSettlementOrder(invoice.grand_total, invoice.invoice_number, taxAmount);
 
-    // 2. Update to 'paid' linking the REAL Razorpay Order ID
-    await query('UPDATE invoices SET status = $1 WHERE id = $2 AND user_id = $3', ['paid', invoice_id, req.user.id]);
+    // 2. Update to 'paid' linking the REAL Razorpay Order ID as the TX Hash
+    await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3 AND user_id = $4', ['paid', order.id, invoice_id, req.user.id]);
     
     await appendAuditLog(req.user.id, {
       action: 'settlement_auto',
