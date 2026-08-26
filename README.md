@@ -1,80 +1,51 @@
-# Agentic Commerce Co-Pilot
+# Nikunj × RazorPay | Agentic Commerce Co-Pilot 🚀
 
-**Razorpay AI Buildathon 2026 Submission**  
-**Track:** 01 — AI Growth & Agentic Commerce
+An enterprise-grade, dual-system AI billing architecture built for **Razorpay AI Buildathon 2026 (Track 01: AI Growth & Agentic Commerce)**.
 
-Agentic Commerce Co-Pilot is a next-generation platform designed to make merchants natively transactable by AI buyers. By bridging the gap between legacy invoices and the incoming wave of agent-to-agent commerce, this project enables AI agents to autonomously audit, approve, and settle B2B payments using Razorpay infrastructure.
+This platform proves that B2B enterprises can safely adopt AI for financial workflows by separating tasks into two distinct layers: a **Human-in-the-Loop Co-Pilot** for bespoke high-value contracts, and a **Level-5 Autonomous Agent** for strictly bounded, high-speed micro-transactions.
 
-##  The Vision: Why Now?
+---
 
-With the global protocol race (ACP, AP2, **x402**) and the rise of autonomous agents, B2B commerce is shifting from human-to-human to agent-to-agent. 
+## 🏆 Key Hackathon Features
 
-This platform acts as the bridge. It allows a business (e.g., a government institution or enterprise) to delegate a budget to an **ERC-8004 AI Agent**. This AI agent can then ingest vendor invoices, score them for compliance, and execute bounded, gated payments via Razorpay—entirely autonomously.
+### 1. Dual-System AI Architecture
+* **AI Co-Pilot (Form):** Unstructured text goes in, structured JSON comes out. Perfect for accountants drafting complex invoices that require manual human review and a "Validate" click.
+* **Agentic Chat (Autonomous):** A conversational agent capable of executing database commands and triggering real financial transactions via Razorpay's S2S API without a frontend widget.
 
-##  Key Features (Hitting the Track 01 Bar)
+### 2. Bounded Budgets & Explainable Risk (The Safety Gate)
+Enterprises won't use agents that can drain their bank accounts. We implemented an **ERC-8004 inspired Delegation Limit**. 
+* The user sets a maximum autonomous budget (e.g., ₹50,000).
+* If the Agent tries to settle an invoice for ₹1,00,000, the backend cryptographically rejects the API call, logs the breach attempt, and gracefully escalates to a human checkout widget.
 
-- **Agent-Readable Invoices:** Uses LLMs (via Mistral) to ingest traditional invoices and convert them into structured, agent-readable JSON.
-- **ERC-8004 Agent Delegation:** Businesses set strict bounds (e.g., Maximum ₹100,000, 30-day expiry) on their autonomous agents.
-- **Gated Autonomy:** Every money action is explainable. The AI Risk Manager generates a `compliance_score`. The agent only executes Razorpay settlements if the score is highly confident.
-- **Graceful Failures:** If an invoice exceeds the delegated budget or fails the compliance check, the agent gracefully halts the transaction, logs the failure, and escalates to a human controller.
-- **Immutable Audit Trail:** Every validation, delegation, and settlement is logged cryptographically (x402/Web3-inspired architecture) for undisputed record-keeping.
+### 3. True Server-to-Server (S2S) Autonomous Settlement
+Most hackathon projects just mock the database update. When our Agent pays an invoice, it genuinely integrates with **Razorpay's Orders API** in the background, generates a real Razorpay `order_id`, and permanently anchors that TX Hash onto the invoice and audit trail.
 
-## ⚙️ Tech Stack
+### 4. AI Growth & Cross-Selling
+The Agent isn't just an accountant; it's a salesman. It dynamically reads the `catalog.json` and natively injects upsell suggestions into the chat (e.g., suggesting Firewalls when a user buys a Webex License). 
 
-- **Frontend:** React, Tailwind CSS, Shadcn UI, Vite
-- **Backend:** Node.js, Express, PostgreSQL
-- **AI / LLM:** Mistral API (mistral-large-latest)
-- **Payments:** Razorpay Test APIs
+### 5. Decentralized Cryptographic Audit Trails
+Every action the AI takes (creating, validating, or paying an invoice) is hashed using SHA-256 and appended to an immutable Audit Ledger. The final invoices are uploaded to the decentralized **IPFS network** via Lighthouse Web3, ensuring permanent, tamper-proof proof of AI actions.
 
-##  Getting Started
+---
 
-### Prerequisites
-- Node.js (v18+)
-- PostgreSQL Database
-- Razorpay Test Account
-- Mistral API Key
+## 👨‍⚖️ Judges: How to Test the Autonomous Safety Gate
 
-### Local Development
+1. Clone the repo, `npm install`, and `npm run dev`.
+2. Go to the **Settings** page and set your **Agent Delegation** limit to `₹50,000`.
+3. Open the **Agent Chat** (floating bottom right).
+4. **Trigger the Block:** Type *"Generate an invoice for ₹1,00,000 and pay it"*. Watch the Agent get mathematically blocked by the backend and escalate to human review.
+5. **Trigger the Success:** Type *"Generate an invoice for ₹5,000 and pay it"*. Watch the Agent bypass the checkout widget entirely, hit the Razorpay API, and return a real **Razorpay TX ID** in the chat.
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/nikunjkumar05/agentic-commerce-copilot.git
-   cd agentic-commerce-copilot
-   ```
+---
 
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
+## 🛠️ Tech Stack
 
-3. **Environment Setup:**
-   Create a `.env.local` and `.env` file in the root directory:
-   ```env
-   # Database & Backend Config
-   DATABASE_URL=your_postgres_connection_string
-   PORT=3001
-   
-   # AI Configuration
-   MISTRAL_API_KEY=your_mistral_api_key
-   
-   # Razorpay Config
-   RAZORPAY_KEY_ID=your_razorpay_key_id
-   RAZORPAY_KEY_SECRET=your_razorpay_key_secret
-   ```
+* **Frontend:** React, Vite, Tailwind CSS, Lucide Icons
+* **Backend:** Node.js, Express
+* **Database:** Neon Serverless PostgreSQL
+* **AI:** Mistral AI (Function Calling, JSON schema enforcement)
+* **Payments:** Razorpay Node SDK (Testnet)
+* **Web3/Storage:** Lighthouse IPFS SDK, SHA-256 Hashing
 
-4. **Run the Application:**
-   Start both the React frontend and Express backend concurrently:
-   ```bash
-   npm run dev:all
-   ```
-
-5. **Usage:**
-   - Navigate to `http://localhost:5173`
-   - Register a demo account.
-   - Go to an invoice, navigate to the **Payment** tab, and configure your AI Agent's budget delegation.
-   - Run the Agent Settlement to see the autonomous Razorpay checkout flow in action!
-
-## Architecture Notes (Audit & Explainability)
-
-In compliance with the track rubric, the `agent_audit_logs` table maintains a strictly append-only record of all agent interactions. The system natively handles exceptions—such as AI hallucination or out-of-bounds payment requests—by failing closed and enforcing human-in-the-loop (HITL) manual checkout.
-
+---
+*Built with NO AI SLOP. Strictly engineered for Enterprise B2B.*
