@@ -2,6 +2,7 @@ import { db } from '@/services/db';
 
 import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -10,10 +11,12 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
-import { Building2, Key, Wallet, Bot, Database as DatabaseIcon, Info, Shield, LogOut, Trash2, Download, Upload } from 'lucide-react';
+import { Building2, Key, Wallet, Bot, Database as DatabaseIcon, Info, Shield, LogOut, Trash2, Download, Upload, ArrowRight } from 'lucide-react';
 import { format } from 'date-fns';
 
 export default function SettingsPage() {
+  const navigate = useNavigate();
+  
   const [profile, setProfile] = useState(() => {
     const stored = localStorage.getItem('institution_profile');
     return stored ? JSON.parse(stored) : { name: '', address: '', gst: '' };
@@ -22,11 +25,6 @@ export default function SettingsPage() {
   const [delegation, setDelegation] = useState(() => {
     const stored = localStorage.getItem('agent_delegation');
     return stored ? JSON.parse(stored) : null;
-  });
-
-  const { data: auditLogs = [] } = useQuery({
-    queryKey: ['audit-logs'],
-    queryFn: () => db.entities.AgentAuditLog.list('-created_date', 10),
   });
 
   const { data: invoices = [] } = useQuery({
@@ -58,13 +56,6 @@ export default function SettingsPage() {
 
   const handleLogout = () => {
     db.auth.logout('/login');
-  };
-
-  const actionLabels = {
-    settlement: 'Settlement',
-    delegation_created: 'Delegation Created',
-    delegation_revoked: 'Delegation Revoked',
-    validation: 'Validation',
   };
 
   return (
@@ -137,27 +128,19 @@ export default function SettingsPage() {
       </Card>
 
       {/* Agent Audit Log */}
-      {auditLogs.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm flex items-center gap-2"><DatabaseIcon className="w-4 h-4" /> Agent Audit Log</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {auditLogs.map(log => (
-                <div key={log.id} className="bg-muted/30 rounded-xl p-3 text-xs space-y-1">
-                  <div className="flex justify-between">
-                    <Badge variant="outline" className="text-[10px]">{actionLabels[log.action] || log.action}</Badge>
-                    <span className="text-muted-foreground">{log.created_date ? format(new Date(log.created_date), 'dd MMM HH:mm') : ''}</span>
-                  </div>
-                  {log.details && <p className="text-muted-foreground">{log.details}</p>}
-                  {log.tx_hash && <p className="font-mono text-[10px] text-muted-foreground">TX: {log.tx_hash.slice(0, 20)}...</p>}
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2"><DatabaseIcon className="w-4 h-4" /> Agent Audit Log</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">All autonomous agent decisions are recorded in an immutable hash chain.</p>
+            <Button onClick={() => navigate('/audit')} className="w-full gap-2">
+              View Cryptographic Audit Trail <ArrowRight className="w-4 h-4" />
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Data Management */}
       <Card>
@@ -178,7 +161,7 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-2 text-xs text-muted-foreground">
           <p className="font-semibold text-foreground">GovtInvoice Co-Pilot v1.0</p>
-          <p>SEETA × NSUT × AIC | Agentic Web3 Billing System</p>
+          <p>Nikunj × RazorPay | Agentic Web3 Billing System</p>
           <p>AI-powered invoice generation, validation, decentralized storage, and agentic payments.</p>
         </CardContent>
       </Card>

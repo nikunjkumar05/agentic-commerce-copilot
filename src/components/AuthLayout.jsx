@@ -10,7 +10,7 @@ export default function AuthLayout({ icon: Icon, title, subtitle, footer, childr
       <div className="w-full max-w-md relative">
         <div className="text-center mb-8">
           <div className="flex justify-center mb-5">
-            <Stamp text="SEETA" variant="navy" className="w-20 h-20" />
+            <Stamp text="Nikunj" variant="navy" className="w-20 h-20" />
           </div>
           <h1 className="text-2xl font-heading font-bold tracking-tight text-foreground">{title}</h1>
           {subtitle && <p className="text-muted-foreground mt-1.5 text-sm">{subtitle}</p>}

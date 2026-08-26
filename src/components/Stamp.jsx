@@ -26,10 +26,10 @@ export default function Stamp({ text = 'APPROVED', variant = 'gold', className, 
       <circle cx="60" cy="60" r="48" fill="none" stroke={c.border} strokeWidth="0.5" opacity="0.4" />
       <circle cx="60" cy="60" r="46" fill="none" stroke={c.border} strokeWidth="0.5" opacity="0.2" />
       <text x="60" y="52" textAnchor="middle" className="text-[8px]" fill={c.text} fontFamily="Inter" fontWeight="600" letterSpacing="3">
-        SEETA
+        Nikunj
       </text>
       <text x="60" y="64" textAnchor="middle" className="text-[6px]" fill={c.text} fontFamily="Inter" fontWeight="400" letterSpacing="2" opacity="0.7">
-        NSUT × AIC
+        RazorPay
       </text>
       <line x1="28" y1="72" x2="92" y2="72" stroke={c.border} strokeWidth="0.5" opacity="0.5" />
       <text x="60" y="84" textAnchor="middle" className="text-[7px]" fill={c.text} fontFamily="Inter" fontWeight="700" letterSpacing="2.5">

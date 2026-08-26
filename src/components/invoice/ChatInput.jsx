@@ -20,7 +20,7 @@ export default function ChatInput({ onSend, isLoading, placeholder }) {
   };
 
   return (
-    <div className="flex items-end gap-2 p-3 bg-card border-t border-border">
+    <div className="flex items-end gap-2 p-3 pb-8 bg-card/80 backdrop-blur-md border-t border-border/50">
       <Textarea
         value={message}
         onChange={(e) => setMessage(e.target.value)}
