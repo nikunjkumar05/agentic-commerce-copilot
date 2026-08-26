@@ -288,13 +288,13 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
   `, [
     id, req.user.id,
     data.invoice_number || `INV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
-    data.institution_name, data.institution_address, data.gst_number,
-    data.recipient_name, data.recipient_address, data.recipient_gst,
+    data.institution_name || null, data.institution_address || null, data.gst_number || null,
+    data.recipient_name || null, data.recipient_address || null, data.recipient_gst || null,
     JSON.stringify(data.line_items || []), data.subtotal || 0,
     data.tax_total || 0, data.grand_total || 0,
     data.currency || 'INR', data.status || 'draft',
-    data.compliance_score, JSON.stringify(data.ai_suggestions || []),
-    data.invoice_date, data.due_date, JSON.stringify(data.milestones || []),
+    data.compliance_score || null, JSON.stringify(data.ai_suggestions || []),
+    data.invoice_date || null, data.due_date || null, JSON.stringify(data.milestones || []),
   ]);
 
   const result = await query('SELECT * FROM invoices WHERE id = $1', [id]);
@@ -514,6 +514,11 @@ const MISTRAL_URL = 'https://api.mistral.ai/v1/chat/completions';
 function normalizeInvoiceResponse(data) {
   if (data && typeof data === 'object' && ('score' in data || 'passed' in data)) {
     return { passed: !!data.passed, score: data.score ?? 0, issues: data.issues || [] };
+  }
+
+  // Handle LLMs that wrap the response in {"invoice": {...}}
+  if (data && data.invoice && typeof data.invoice === 'object') {
+    data = data.invoice;
   }
 
   const out = {};
