@@ -189,6 +189,12 @@ export default function PaymentPage() {
         theme: { color: '#9333ea' } // matches the purple agent theme
       };
 
+      if (window.__rzpFailed || typeof window.Razorpay === 'undefined') {
+        toast.error('Payment gateway failed to load. Please disable adblockers and check your connection.', { duration: 5000 });
+        setIsProcessing(false);
+        return;
+      }
+
       const rzp = new window.Razorpay(options);
       rzp.on('payment.failed', function (response){
         toast.error(response.error.description || 'Payment failed');
