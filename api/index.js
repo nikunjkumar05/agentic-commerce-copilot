@@ -541,9 +541,9 @@ function normalizeInvoiceResponse(data) {
     out.subtotal + out.tax_total;
 
   out.currency = data.currency || data.invoice_details?.currency || 'INR';
-  const invDate = data.invoice_details || {};
-  out.invoice_date = data.invoice_date || invDate.invoice_date || invDate.invoiceDate || new Date().toISOString().split('T')[0];
-  out.due_date = data.due_date || invDate.due_date || invDate.dueDate || new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
+  // Force the current date to prevent LLM hallucinating past dates (e.g. 2023)
+  out.invoice_date = new Date().toISOString().split('T')[0];
+  out.due_date = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
   out.ai_suggestions = data.ai_suggestions || data.suggestions || data.issues || [];
   out.compliance_score = data.compliance_score ?? data.score ?? 85;
   return out;
