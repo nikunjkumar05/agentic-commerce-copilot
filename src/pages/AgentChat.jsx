@@ -43,7 +43,9 @@ export default function AgentChat() {
   // 3. When user returns from payment page, check if invoice was settled
   useEffect(() => {
     if (!lastInvoiceId) return;
-    const alreadyNotified = messages.some(m => m.uiType === 'settlement_complete');
+    
+    // Check if we already notified via the standard widget OR the autonomous widget
+    const alreadyNotified = messages.some(m => m.uiType === 'settlement_complete' || m.uiType === 'payment_done');
     if (alreadyNotified) return;
 
     db.entities.Invoice.filter({ id: lastInvoiceId }).then(list => {
@@ -57,7 +59,7 @@ export default function AgentChat() {
         }]);
       }
     }).catch(() => {});
-  }, [lastInvoiceId]);
+  }, [lastInvoiceId, messages.length]);
 
   const handleSend = async (e) => {
     e?.preventDefault();
@@ -240,6 +242,8 @@ export default function AgentChat() {
         </div>
         <Button variant="ghost" size="sm" className="ml-auto text-xs" onClick={() => {
           localStorage.removeItem('agent_chat_history');
+          localStorage.removeItem('agent_last_invoice_id');
+          setLastInvoiceId(null);
           setMessages([{ role: 'assistant', content: 'Chat history cleared. How can I help you?' }]);
         }}>Clear</Button>
       </div>
