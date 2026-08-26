@@ -197,9 +197,9 @@ export default function AgentChat() {
               
               setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: `✅ **Payment Authorized:** Invoice has been autonomously settled via Server-to-Server API.\n\n**Razorpay TX ID:** \`${res.order_id}\`\n\nThe ledger has been cryptographically updated without any human intervention.`,
+                content: 'The invoice has been autonomously settled via the Server-to-Server API. No human intervention was required.',
                 uiType: 'payment_done',
-                uiData: { id: targetId }
+                uiData: { id: targetId, tx_id: res.order_id }
               }]);
               
             } catch (err) {
@@ -295,10 +295,18 @@ export default function AgentChat() {
 
               {msg.uiType === 'payment_done' && msg.uiData && (
                 <div className="w-full mt-2 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                  <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-lg flex items-center justify-between">
-                    <span className="text-sm font-medium text-green-700 dark:text-green-300">✓ Payment routed to settlement</span>
-                    <Button size="sm" variant="outline" className="text-xs" onClick={() => navigate(`/invoice/${msg.uiData.id}/pay`)}>
-                      Go to Payment
+                  <div className="p-4 bg-green-50 border border-green-200 rounded-xl space-y-3">
+                    <div className="flex items-center gap-2">
+                       <div className="w-6 h-6 rounded-full bg-green-500 text-white flex items-center justify-center text-xs">✓</div>
+                       <span className="text-sm font-bold text-green-800">Autonomous Settlement Successful</span>
+                    </div>
+                    {msg.uiData.tx_id && (
+                       <div className="bg-white/60 p-2 rounded text-xs font-mono text-green-700 border border-green-100 break-all">
+                         TX: {msg.uiData.tx_id}
+                       </div>
+                    )}
+                    <Button size="sm" className="w-full bg-green-600 hover:bg-green-700 text-white text-xs h-8 shadow-sm" onClick={() => navigate(`/invoice/${msg.uiData.id}`)}>
+                      View Paid Invoice
                     </Button>
                   </div>
                 </div>
