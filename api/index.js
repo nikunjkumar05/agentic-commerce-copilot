@@ -599,6 +599,88 @@ app.post('/api/llm/invoke', authMiddleware, async (req, res) => {
   }
 });
 
+// --- Conversational AI Checkout Agent (Tier 2) ---
+app.post('/api/agent/chat', authMiddleware, async (req, res) => {
+  const { messages } = req.body;
+
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "search_catalog",
+        description: "Search for available products or services to buy.",
+        parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "create_invoice",
+        description: "Create a new invoice for the user's requested items.",
+        parameters: { 
+          type: "object", 
+          properties: { 
+            description: { type: "string" },
+            amount: { type: "number" }
+          }, 
+          required: ["description", "amount"] 
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "trigger_payment",
+        description: "Trigger the Razorpay checkout process for a specific invoice ID to settle it autonomously.",
+        parameters: { type: "object", properties: { invoice_id: { type: "string" } }, required: ["invoice_id"] }
+      }
+    }
+  ];
+
+  if (!MISTRAL_API_KEY) {
+    // Hackathon fallback if Mistral key is missing
+    const lastMsg = messages[messages.length - 1].content.toLowerCase();
+    if (lastMsg.includes('buy') || lastMsg.includes('invoice')) {
+      return res.json({ role: 'assistant', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'create_invoice', arguments: '{"description":"IT Support License","amount":5000}' } }] });
+    }
+    if (lastMsg.includes('pay') || lastMsg.includes('settle')) {
+      return res.json({ role: 'assistant', tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'trigger_payment', arguments: '{"invoice_id":"demo-id"}' } }] });
+    }
+    return res.json({ role: 'assistant', content: "I am your Agentic Co-Pilot. I can search the catalog, create invoices, and settle payments. How can I help?" });
+  }
+
+  try {
+    const body = {
+      model: MISTRAL_MODEL,
+      messages: [
+        { role: "system", content: "You are an autonomous B2B AI Agentic Commerce Co-Pilot. You help buyers search the catalog, create invoices, and settle payments autonomously using the provided tools. Be concise and professional." },
+        ...messages
+      ],
+      tools: tools,
+      tool_choice: "auto",
+      temperature: 0.2
+    };
+
+    const response = await fetch(MISTRAL_URL, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${MISTRAL_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    
+    if (!response.ok) throw new Error(`Mistral API Error: ${await response.text()}`);
+    
+    const data = await response.json();
+    const message = data.choices[0].message;
+
+    // Return text or tool calls to the frontend
+    res.json(message);
+
+  } catch (err) {
+    console.error('Agent chat error:', err);
+    res.status(500).json({ error: 'Agent chat failed' });
+  }
+});
+
 // --- App Settings ---
 app.get('/api/apps/public/prod/public-settings/by-id/:appId', async (req, res) => {
   const result = await query('SELECT * FROM app_settings WHERE id = $1', [req.params.appId]);
