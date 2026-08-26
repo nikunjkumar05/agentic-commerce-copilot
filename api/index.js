@@ -601,7 +601,7 @@ async function callMistralAPI(prompt, schema) {
     model: MISTRAL_MODEL,
     messages,
     temperature: 0.2,
-    max_tokens: 800,
+    max_tokens: 2500,
   };
 
   // Don't use response_format:json_object — many free models don't support it.
