@@ -168,7 +168,7 @@ export default function AgentChat() {
                 setTimeout(() => {
                   setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `✨ **AI Growth Suggestion:** Since you are proceeding with ${args.description}, I highly recommend adding **${upsell.name}** for optimal performance. It is available in the catalog for ₹${upsell.price.toLocaleString('en-IN')}.\n\nWould you like me to generate a new invoice for that as well?`,
+                    content: `✨ AI Growth Suggestion: Since you are proceeding with ${args.description}, I highly recommend adding ${upsell.name} for optimal performance. It is available in the catalog for ₹${upsell.price.toLocaleString('en-IN')}. Would you like me to generate a new invoice for that as well?`,
                   }]);
                 }, 2500);
               }
@@ -206,7 +206,7 @@ export default function AgentChat() {
               // Usually out of bounds or network error
               setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: `🚨 **Agent Blocked:** I cannot settle this autonomously (either compliance score is too low, or it exceeds my delegation limit of ₹${delegation_max.toLocaleString('en-IN')}). Escalating to human checkout...`,
+                content: `🚨 Agent Blocked: I cannot settle this autonomously (either compliance score is too low, or it exceeds my delegation limit of ₹${delegation_max.toLocaleString('en-IN')}). Escalating to human checkout...`,
                 uiType: 'payment_blocked',
                 uiData: { id: targetId }
               }]);
