@@ -1,0 +1,33 @@
+{
+  "merchant_name": "GovtInvoice Co-Pilot",
+  "merchant_type": "B2B IT Services & Licensing",
+  "currency": "INR",
+  "capabilities": ["autonomous_invoicing", "razorpay_settlement"],
+  "agent_endpoints": {
+    "chat_and_checkout": "/api/agent/chat",
+    "direct_settle": "/api/agent/settle"
+  },
+  "catalog": [
+    {
+      "id": "prod_it_license",
+      "name": "Enterprise IT License",
+      "description": "Annual subscription for enterprise IT infrastructure management.",
+      "price": 5000,
+      "tax_rate": 18
+    },
+    {
+      "id": "prod_cloud_hosting",
+      "name": "Cloud Hosting",
+      "description": "Monthly dedicated server hosting with 99.9% uptime SLA.",
+      "price": 12000,
+      "tax_rate": 18
+    },
+    {
+      "id": "prod_network_sec",
+      "name": "Network Security Services",
+      "description": "Comprehensive firewall and zero-trust network implementation.",
+      "price": 8500,
+      "tax_rate": 18
+    }
+  ]
+}
