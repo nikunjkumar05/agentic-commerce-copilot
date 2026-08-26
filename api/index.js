@@ -347,6 +347,34 @@ app.delete('/api/invoices/:id', authMiddleware, async (req, res) => {
   res.json({ success: true });
 });
 
+app.post('/api/ipfs/upload', authMiddleware, async (req, res) => {
+  try {
+    const LIGHTHOUSE_API_KEY = process.env.LIGHTHOUSE_API_KEY || 'bc2e8494.ba6f3cae282f465f913ab6b4b8aeaf76';
+    const payload = req.body;
+    
+    // Lighthouse expects a file or a string. We can upload a string Buffer.
+    const formData = new FormData();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    formData.append('file', blob, 'invoice.json');
+
+    const response = await fetch('https://node.lighthouse.storage/api/v0/add', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${LIGHTHOUSE_API_KEY}` },
+      body: formData
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Lighthouse API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    res.json({ cid: data.Hash, gatewayUrl: `https://gateway.lighthouse.storage/ipfs/${data.Hash}` });
+  } catch (err) {
+    console.error('IPFS Upload Error:', err);
+    res.status(500).json({ error: 'ipfs_upload_failed', message: 'Failed to store document on IPFS' });
+  }
+});
+
 const ALLOWED_AUDIT_SORT_FIELDS = new Set([
   'created_date', 'action', 'amount', 'invoice_number'
 ]);

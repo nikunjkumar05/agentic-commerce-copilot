@@ -59,12 +59,35 @@ export default function InvoiceDetail() {
 
   const handleStoreOnIPFS = async () => {
     setIsStoring(true);
-    await new Promise(r => setTimeout(r, 2000));
-    const cid = generateCID();
-    await db.entities.Invoice.update(id, { cid, status: 'stored' });
-    queryClient.invalidateQueries({ queryKey: ['invoice', id] });
-    queryClient.invalidateQueries({ queryKey: ['invoices'] });
-    toast.success('Invoice stored on IPFS!', { description: `CID: ${cid.slice(0, 20)}...` });
+    try {
+      const token = localStorage.getItem('app_access_token');
+      const res = await fetch('/api/ipfs/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(invoice)
+      });
+      if (!res.ok) throw new Error('Upload failed');
+      const data = await res.json();
+      const cid = data.cid;
+
+      await db.entities.Invoice.update(id, { cid, status: 'stored' });
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      
+      toast.success('Invoice stored on IPFS!', { 
+        description: (
+          <a href={data.gatewayUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-400">
+            View CID: {cid.slice(0, 20)}...
+          </a>
+        )
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to store on IPFS');
+    }
     setIsStoring(false);
   };
 
