@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { Home, Plus, Database, Settings, Bot, MonitorPlay } from 'lucide-react';
+import { Home, Plus, Database, Settings, Bot } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Stamp from '@/components/Stamp';
 
@@ -7,7 +7,6 @@ const navItems = [
   { path: '/', icon: Home, label: 'Home' },
   { path: '/invoice/new', icon: Plus, label: 'New' },
   { path: '/agent-chat', icon: Bot, label: 'Agent' },
-  { path: '/simulation', icon: MonitorPlay, label: 'Demo' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
 
