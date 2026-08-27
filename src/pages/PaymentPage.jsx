@@ -146,8 +146,10 @@ export default function PaymentPage() {
         if (res.status === 403) {
           // Graceful Failure! Trigger the UI panel
           setAgentError(data.message || 'Agent Out of Bounds: Human review required.');
+        } else if (res.status === 409) {
+          toast.info(data.message || 'Invoice is already settled.');
         } else {
-          toast.error('Agent encountered an error.');
+          toast.error(data.message || 'Agent encountered an error.');
         }
         setIsProcessing(false);
         return;

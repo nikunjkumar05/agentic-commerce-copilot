@@ -206,6 +206,17 @@ export default function AgentChat() {
               }]);
               
             } catch (err) {
+              if (err.status === 409) {
+                // Idempotency protection: already settled
+                setMessages(prev => [...prev, {
+                  role: 'assistant',
+                  content: 'This invoice has already been settled. Re-settlement is blocked to prevent double payment.',
+                  uiType: 'payment_done',
+                  uiData: { id: targetId }
+                }]);
+                continue;
+              }
+
               // Usually out of bounds or network error
               setMessages(prev => [...prev, {
                 role: 'assistant',

@@ -408,6 +408,14 @@ app.post('/api/agent/settle', authMiddleware, async (req, res) => {
   if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invoiceRes.rows[0];
 
+  // IDEMPOTENCY GUARD: Prevent double-spend / duplicate settlements
+  if (invoice.status === 'paid') {
+    return res.status(409).json({
+      error: 'already_settled',
+      message: `Invoice ${invoice.invoice_number} is already paid. Duplicate settlement blocked.`
+    });
+  }
+
   // GATE 1 & 2: Explainable Risk & Bounded Budget
   if (invoice.compliance_score < 85 || invoice.grand_total > delegation_max) {
     // GRACEFUL FAILURE: Log it, block it
@@ -453,6 +461,15 @@ app.post('/api/agent/auto-settle', authMiddleware, async (req, res) => {
   const invoiceRes = await query('SELECT * FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [invoice_id, req.user.id]);
   if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invoiceRes.rows[0];
+
+  // IDEMPOTENCY GUARD: Prevent autonomous double-settlement
+  if (invoice.status === 'paid') {
+    return res.status(409).json({
+      error: 'already_settled',
+      message: `Invoice ${invoice.invoice_number} is already paid. Autonomous re-settlement blocked for idempotency.`,
+      order_id: invoice.tx_hash
+    });
+  }
 
   // GATE 1 & 2: Explainable Risk & Bounded Budget
   if (invoice.compliance_score < 85 || invoice.grand_total > delegation_max) {
