@@ -195,7 +195,8 @@ export default function AgentChat() {
 
             try {
               // --- TIER 3: TRUE SERVER-TO-SERVER AUTO PAY ---
-              const res = await db.integrations.Agent.autoSettle({ invoice_id: targetId, delegation_max });
+              // The backend ignores client delegation bounds and securely fetches them from the user's DB record
+              const res = await db.integrations.Agent.autoSettle({ invoice_id: targetId });
               
               setMessages(prev => [...prev, {
                 role: 'assistant',
@@ -208,7 +209,7 @@ export default function AgentChat() {
               // Usually out of bounds or network error
               setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: `🚨 Agent Blocked: I cannot settle this autonomously (either compliance score is too low, or it exceeds my delegation limit of ₹${delegation_max.toLocaleString('en-IN')}). Escalating to human checkout...`,
+                content: `🚨 Agent Blocked: I cannot settle this autonomously (either compliance score is too low, or it exceeds my database delegation limit). Escalating to human checkout...`,
                 uiType: 'payment_blocked',
                 uiData: { id: targetId }
               }]);

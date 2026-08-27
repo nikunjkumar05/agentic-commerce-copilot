@@ -85,6 +85,11 @@ export async function initDb() {
       EXCEPTION
         WHEN duplicate_column THEN null;
       END;
+      BEGIN
+        ALTER TABLE users ADD COLUMN agent_delegation_max REAL DEFAULT 0;
+      EXCEPTION
+        WHEN duplicate_column THEN null;
+      END;
     END $$;
   `);
 }

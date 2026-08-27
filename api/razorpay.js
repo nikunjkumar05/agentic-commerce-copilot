@@ -53,6 +53,21 @@ export async function createAgentSettlementOrder(amount, receipt, taxAmount = 0)
     await new Promise(r => setTimeout(r, 800));
     
     const order = await instance.orders.create(options);
+    
+    // Feature 8 (Fix): Demonstrate True S2S Capture payload construction
+    // In production, Agentic payments use pre-authorized tokens (e.g., mandate or recurring)
+    console.log(`[AGENT_S2S_MANDATE_SIMULATION] Autonomously capturing order ${order.id} via Server-to-Server Token API:`, JSON.stringify({
+      email: "agent@agentic-copilot.local",
+      contact: "9999999999",
+      amount: totalPaise,
+      currency: "INR",
+      order_id: order.id,
+      customer_id: "cust_agentic_demo",
+      token: "token_agent_preauth_vault",
+      recurring: "1",
+      description: "Agentic Autonomous Checkout"
+    }, null, 2));
+
     return order;
   } catch (error) {
     console.error("Error creating Razorpay order:", error);

@@ -399,15 +399,17 @@ import { createAgentSettlementOrder, verifyWebhookSignature, verifySignature } f
 
 // --- Razorpay Agentic Commerce ---
 app.post('/api/agent/settle', authMiddleware, async (req, res) => {
-  const { invoice_id, delegation_max } = req.body;
+  const { invoice_id } = req.body;
+  const userRes = await query('SELECT agent_delegation_max FROM users WHERE id = $1', [req.user.id]);
+  const delegation_max = userRes.rows[0]?.agent_delegation_max || 0;
+  
   // Allow lookup by either UUID or human-readable invoice_number
   const invoiceRes = await query('SELECT * FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [invoice_id, req.user.id]);
   if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invoiceRes.rows[0];
 
   // GATE 1 & 2: Explainable Risk & Bounded Budget
-  // (Compliance score check temporarily disabled for development phase)
-  if (/* invoice.compliance_score < 85 || */ invoice.grand_total > delegation_max) {
+  if (invoice.compliance_score < 85 || invoice.grand_total > delegation_max) {
     // GRACEFUL FAILURE: Log it, block it
     await appendAuditLog(req.user.id, {
       action: 'settlement_blocked',
@@ -443,15 +445,17 @@ app.post('/api/agent/settle', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/agent/auto-settle', authMiddleware, async (req, res) => {
-  const { invoice_id, delegation_max } = req.body;
+  const { invoice_id } = req.body;
+  const userRes = await query('SELECT agent_delegation_max FROM users WHERE id = $1', [req.user.id]);
+  const delegation_max = userRes.rows[0]?.agent_delegation_max || 0;
+  
   // Allow lookup by either UUID or human-readable invoice_number
   const invoiceRes = await query('SELECT * FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [invoice_id, req.user.id]);
   if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invoiceRes.rows[0];
 
   // GATE 1 & 2: Explainable Risk & Bounded Budget
-  // (Compliance score check temporarily disabled for development phase)
-  if (/* invoice.compliance_score < 85 || */ invoice.grand_total > delegation_max) {
+  if (invoice.compliance_score < 85 || invoice.grand_total > delegation_max) {
     // GRACEFUL FAILURE: Log it, block it
     await appendAuditLog(req.user.id, {
       action: 'settlement_blocked',
@@ -485,6 +489,17 @@ app.post('/api/agent/auto-settle', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('Razorpay auto-settle error:', err);
     res.status(500).json({ error: 'razorpay_error', message: err.message });
+  }
+});
+
+// Securely update user's delegation limit in DB
+app.post('/api/user/delegation', authMiddleware, async (req, res) => {
+  const { maxAmount } = req.body;
+  try {
+    await query('UPDATE users SET agent_delegation_max = $1 WHERE id = $2', [Number(maxAmount) || 0, req.user.id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'db_error', message: err.message });
   }
 });
 
@@ -591,8 +606,23 @@ function normalizeInvoiceResponse(data) {
   // Force the current date to prevent LLM hallucinating past dates (e.g. 2023)
   out.invoice_date = new Date().toISOString().split('T')[0];
   out.due_date = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
+  // BUGFIX: Deterministic Compliance (Don't trust the LLM!)
+  // Validate GSTIN format deterministically server-side
+  const gstRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+  let computedScore = data.compliance_score ?? data.score ?? 95;
   out.ai_suggestions = data.ai_suggestions || data.suggestions || data.issues || [];
-  out.compliance_score = data.compliance_score ?? data.score ?? 85;
+
+  if (out.recipient_gst && !gstRegex.test(out.recipient_gst)) {
+    computedScore = Math.min(computedScore, 65);
+    out.ai_suggestions.push({
+      field: "recipient_gst",
+      issue: "CRITICAL: Invalid GSTIN Format detected by deterministic scan",
+      suggestion: "The AI generated an invalid GST number. It must follow standard 15-char format (e.g. 07AAACN0372J1ZB).",
+      severity: "critical"
+    });
+  }
+
+  out.compliance_score = computedScore;
   return out;
 }
 

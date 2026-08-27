@@ -96,23 +96,31 @@ export default function PaymentPage() {
   const handleSetupDelegation = async () => {
     const del = {
       maxAmount: Number(maxAmount),
-      expiry: new Date(Date.now() + Number(expiryDays) * 86400000).toISOString(),
+      expiry: Date.now() + Number(expiryDays) * 86400000,
       agentAddress: '0x' + 'a1b2c3d4e5'.repeat(4),
       ownerAddress: '0x' + 'f6e7d8c9b0'.repeat(4),
       createdAt: new Date().toISOString(),
     };
     localStorage.setItem('agent_delegation', JSON.stringify(del));
     setDelegation(del);
+
     try {
+      const token = localStorage.getItem('app_access_token');
+      await fetch('/api/user/delegation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
+        body: JSON.stringify({ maxAmount: del.maxAmount })
+      });
+
       await db.entities.AgentAuditLog.create({
         action: 'delegation_created', amount: Number(maxAmount),
         agent_address: del.agentAddress, owner_address: del.ownerAddress,
-        details: `Delegation up to ₹${maxAmount} for ${expiryDays} days`,
+        details: `Delegation up to ₹${maxAmount} for ${expiryDays} days securely anchored to database.`,
       });
     } catch (err) {
       console.error('Failed to log delegation:', err);
     }
-    toast.success('Agent delegation created');
+    toast.success('Agent delegation anchored to server');
   };
 
   const handleAgentSettle = async () => {
@@ -128,8 +136,7 @@ export default function PaymentPage() {
           ...(token && { Authorization: `Bearer ${token}` })
         },
         body: JSON.stringify({
-          invoice_id: id,
-          delegation_max: delegation.maxAmount
+          invoice_id: id
         })
       });
       
