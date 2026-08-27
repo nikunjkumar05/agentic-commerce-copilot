@@ -240,7 +240,7 @@ app.post('/api/auth/forgot-password', (req, res) => res.json({ success: true }))
 app.post('/api/auth/reset-password', (req, res) => res.json({ success: true }));
 
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
-  const result = await query('SELECT id, email, name, role, created_at FROM users WHERE id = $1', [req.user.id]);
+  const result = await query('SELECT id, email, name, role, created_at, agent_delegation_max FROM users WHERE id = $1', [req.user.id]);
   if (result.rows.length === 0) return res.status(404).json({ error: 'user_not_found', message: 'User not found' });
   res.json(result.rows[0]);
 });
@@ -393,6 +393,54 @@ app.post('/api/audit-logs', authMiddleware, async (req, res) => {
   const id = await appendAuditLog(req.user.id, data);
   const result = await query('SELECT * FROM audit_logs WHERE id = $1', [id]);
   res.status(201).json(result.rows[0]);
+});
+
+app.get('/api/audit-logs/verify', authMiddleware, async (req, res) => {
+  // Fetch all logs in strict chronological order to verify the chain
+  const result = await query(
+    `SELECT * FROM audit_logs WHERE user_id = $1 ORDER BY created_date ASC`,
+    [req.user.id]
+  );
+  
+  const logs = result.rows;
+  if (logs.length === 0) return res.json({ valid: true, message: 'No logs to verify.' });
+
+  let expectedPrevHash = '0'.repeat(64);
+  let brokenLogId = null;
+
+  for (const log of logs) {
+    // 1. Check if the chain link is intact
+    if (log.prev_hash !== expectedPrevHash) {
+      brokenLogId = log.id;
+      break;
+    }
+
+    // 2. Recompute the hash of the current payload
+    const payload = JSON.stringify({
+      user_id: log.user_id,
+      action: log.action,
+      invoice_id: log.invoice_id || null,
+      amount: log.amount || null,
+      prev_hash: log.prev_hash,
+      timestamp: log.created_date instanceof Date ? log.created_date.toISOString() : log.created_date
+    });
+    const computedHash = crypto.createHash('sha256').update(payload).digest('hex');
+
+    // 3. Verify it matches the stored hash
+    if (computedHash !== log.hash) {
+      brokenLogId = log.id;
+      break;
+    }
+
+    // Set the expected next prev_hash
+    expectedPrevHash = log.hash;
+  }
+
+  if (brokenLogId) {
+    return res.json({ valid: false, broken_log_id: brokenLogId, message: 'CRITICAL: Hash chain broken or data tampered.' });
+  }
+
+  res.json({ valid: true, message: 'Cryptographic ledger is 100% mathematically valid.' });
 });
 
 import { createAgentSettlementOrder, verifyWebhookSignature, verifySignature } from './razorpay.js';

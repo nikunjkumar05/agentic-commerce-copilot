@@ -10,8 +10,7 @@ import { Badge } from '@/components/ui/badge';
 export default function AuditTrailPage() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationComplete, setVerificationComplete] = useState(false);
-
-  // Fetch all logs from the database
+  const [verificationError, setVerificationError] = useState(null);
   const { data: logs = [], isLoading } = useQuery({
     queryKey: ['audit-logs-full'],
     queryFn: () => db.entities.AgentAuditLog.list('-created_date', 100),
@@ -20,36 +19,30 @@ export default function AuditTrailPage() {
   const verifyIntegrity = async () => {
     setIsVerifying(true);
     setVerificationComplete(false);
+    setVerificationError(null);
     
-    // Real client-side cryptographic verification
-    let isValid = true;
-    for (let i = 0; i < logs.length; i++) {
-      const log = logs[i];
-      const payload = JSON.stringify({
-        user_id: log.user_id,
-        action: log.action,
-        invoice_id: log.invoice_id || null,
-        amount: log.amount || null,
-        prev_hash: log.prev_hash,
-        timestamp: log.created_date
+    try {
+      // Call the real backend cryptographic verification endpoint
+      const res = await fetch('/api/audit-logs/verify', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('app_access_token')}`
+        }
       });
+      const data = await res.json();
       
-      const encoder = new TextEncoder();
-      const data = encoder.encode(payload);
-      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const computedHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-      
-      // In a real strict environment, we'd break here. For demo, we just verify it computes correctly.
-      if (computedHash !== log.hash) {
-        console.warn('Hash mismatch on log:', log.id);
+      // Artificial delay just for the UI dramatic effect during demo
+      await new Promise(r => setTimeout(r, 1200));
+
+      if (data.valid) {
+        setVerificationComplete(true);
+      } else {
+        setVerificationError(`Tampering Detected! Block ID: ${data.broken_log_id}`);
       }
-    }
-    
-    setTimeout(() => {
+    } catch (err) {
+      setVerificationError("Failed to reach verification server.");
+    } finally {
       setIsVerifying(false);
-      setVerificationComplete(true);
-    }, 1500); // Keep a small delay for UX so it doesn't instantly flash
+    }
   };
 
   const getActionConfig = (action) => {
@@ -90,6 +83,18 @@ export default function AuditTrailPage() {
                 <h4 className="text-sm font-bold text-green-700 dark:text-green-400">Cryptographic Integrity Verified</h4>
                 <p className="text-xs text-green-600/80 dark:text-green-400/80 mt-1">
                   All {logs.length} agent actions have been mathematically verified against their SHA-256 hash chains. Zero tampering detected.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {verificationError && (
+            <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg flex items-start gap-3 animate-in fade-in zoom-in duration-500">
+              <AlertTriangle className="w-5 h-5 text-red-500 mt-0.5 shrink-0" />
+              <div>
+                <h4 className="text-sm font-bold text-red-700 dark:text-red-400">CRITICAL: Ledger Integrity Compromised</h4>
+                <p className="text-xs text-red-600/80 dark:text-red-400/80 mt-1">
+                  {verificationError}. The mathematical hash chain has been broken, indicating the database was tampered with.
                 </p>
               </div>
             </div>

@@ -189,9 +189,7 @@ export default function AgentChat() {
               continue;
             }
 
-            // Grab delegation logic
-            const delegation = JSON.parse(localStorage.getItem('agent_delegation') || 'null');
-            const delegation_max = delegation ? delegation.maxAmount : 0;
+            // Ensure backend bounds are the single source of truth
 
             try {
               // --- TIER 3: TRUE SERVER-TO-SERVER AUTO PAY ---

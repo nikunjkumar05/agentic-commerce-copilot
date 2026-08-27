@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils';
 export default function PaymentPage() {
   const { id } = useParams();
   const queryClient = useQueryClient();
-  const [paymentTab, setPaymentTab] = useState('x402');
+  const [paymentTab, setPaymentTab] = useState('manual');
   const [isProcessing, setIsProcessing] = useState(false);
   const [receipt, setReceipt] = useState(null);
   const [agentError, setAgentError] = useState(null);
@@ -53,19 +53,28 @@ export default function PaymentPage() {
     },
   });
 
-  const handleX402Payment = async () => {
+  const [utrNumber, setUtrNumber] = useState('');
+
+  const handleBankTransfer = async () => {
+    if (!utrNumber.trim()) {
+      toast.error('Please enter a valid UTR reference number.');
+      return;
+    }
     setIsProcessing(true);
-    await new Promise(r => setTimeout(r, 2500));
-    const txHash = generateTxHash();
-    await db.entities.Invoice.update(id, { tx_hash: txHash, status: 'paid', payment_method: 'x402' });
-    await db.entities.AgentAuditLog.create({
-      action: 'settlement', invoice_id: id, invoice_number: invoice.invoice_number,
-      amount: invoice.grand_total, tx_hash: txHash, details: 'x402 protocol payment'
-    });
-    queryClient.invalidateQueries({ queryKey: ['invoice', id] });
-    setReceipt({ txHash, method: 'x402', amount: '0.001 ETH', network: 'Optimism Sepolia' });
-    setIsProcessing(false);
-    toast.success('Payment successful!');
+    try {
+      await db.entities.Invoice.update(id, { tx_hash: utrNumber, status: 'paid', payment_method: 'bank_transfer' });
+      await db.entities.AgentAuditLog.create({
+        action: 'settlement', invoice_id: id, invoice_number: invoice.invoice_number,
+        amount: invoice.grand_total, tx_hash: utrNumber, details: 'Manual Bank Transfer (NEFT/RTGS) verification'
+      });
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] });
+      setReceipt({ txHash: utrNumber, method: 'bank_transfer', amount: invoice.grand_total, network: 'Fiat' });
+      toast.success('Payment recorded successfully!');
+    } catch (err) {
+      toast.error('Failed to record payment.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleMPPRelease = async (milestoneIdx) => {
@@ -94,22 +103,18 @@ export default function PaymentPage() {
   };
 
   const handleSetupDelegation = async () => {
-    const del = {
-      maxAmount: Number(maxAmount),
-      expiry: Date.now() + Number(expiryDays) * 86400000,
-      agentAddress: '0x' + 'a1b2c3d4e5'.repeat(4),
-      ownerAddress: '0x' + 'f6e7d8c9b0'.repeat(4),
-      createdAt: new Date().toISOString(),
-    };
-    localStorage.setItem('agent_delegation', JSON.stringify(del));
-    setDelegation(del);
-
     try {
       const token = localStorage.getItem('app_access_token');
       await fetch('/api/user/delegation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
-        body: JSON.stringify({ maxAmount: del.maxAmount })
+        body: JSON.stringify({ maxAmount: Number(maxAmount) || 0 })
+      });
+
+      // Update local state without touching localStorage
+      setDelegation({
+        maxAmount: Number(maxAmount),
+        expiry: Date.now() + Number(expiryDays) * 86400000
       });
 
       await db.entities.AgentAuditLog.create({
@@ -361,30 +366,33 @@ export default function PaymentPage() {
 
       <Tabs value={paymentTab} onValueChange={setPaymentTab} className="px-4">
         <TabsList className="w-full h-9 bg-muted/50 mb-4">
-          <TabsTrigger value="x402" className="text-xs flex-1 gap-1"><Zap className="w-3 h-3" /> x402</TabsTrigger>
+          <TabsTrigger value="manual" className="text-xs flex-1 gap-1"><Wallet className="w-3 h-3" /> Bank Transfer</TabsTrigger>
           <TabsTrigger value="mpp" className="text-xs flex-1 gap-1"><Users className="w-3 h-3" /> MPP</TabsTrigger>
           <TabsTrigger value="agent" className="text-xs flex-1 gap-1"><Bot className="w-3 h-3" /> Agent</TabsTrigger>
         </TabsList>
 
-        {/* x402 Payment */}
-        <TabsContent value="x402">
+        {/* Bank Transfer (Manual) */}
+        <TabsContent value="manual">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm flex items-center gap-2"><Zap className="w-4 h-4 text-yellow-500" /> x402 Protocol Payment</CardTitle>
+              <CardTitle className="text-sm flex items-center gap-2"><Wallet className="w-4 h-4 text-blue-500" /> Manual Bank Transfer</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <p className="text-xs text-muted-foreground">Pay using the x402 HTTP payment protocol on Optimism Sepolia testnet.</p>
+              <p className="text-xs text-muted-foreground">Mark this invoice as paid if you have settled it outside the platform via NEFT/RTGS.</p>
               <div className="bg-muted/50 rounded-xl p-3 space-y-2">
-                <div className="flex justify-between text-sm"><span className="text-muted-foreground">Invoice Amount</span><span className="font-bold">{formatCurrency(invoice.grand_total, invoice.currency)}</span></div>
-                <div className="flex justify-between text-sm"><span className="text-muted-foreground">Network Fee</span><span>0.001 ETH</span></div>
-                <div className="flex justify-between text-sm"><span className="text-muted-foreground">Network</span><Badge variant="outline" className="text-[10px]">Optimism Sepolia</Badge></div>
+                <div className="flex justify-between text-sm"><span className="text-muted-foreground">Amount Due</span><span className="font-bold">{formatCurrency(invoice.grand_total, invoice.currency)}</span></div>
               </div>
-              <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 flex items-start gap-2">
-                <Wallet className="w-4 h-4 text-yellow-600 mt-0.5 shrink-0" />
-                <p className="text-xs text-yellow-700">Demo Mode: Payment will be simulated on testnet with a generated transaction hash.</p>
+              <div className="space-y-2">
+                <Label className="text-xs">UTR Reference Number</Label>
+                <Input 
+                  placeholder="e.g. SBIN43920194..." 
+                  value={utrNumber}
+                  onChange={(e) => setUtrNumber(e.target.value)}
+                  className="h-10 text-sm font-mono"
+                />
               </div>
-              <Button className="w-full h-12 text-sm font-semibold" onClick={handleX402Payment} disabled={isProcessing || invoice.status === 'paid'}>
-                {isProcessing ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Processing...</> : 'Pay Now'}
+              <Button className="w-full h-12 text-sm font-semibold" onClick={handleBankTransfer} disabled={isProcessing || invoice.status === 'paid'}>
+                {isProcessing ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Processing...</> : 'Record Payment'}
               </Button>
             </CardContent>
           </Card>
@@ -440,7 +448,7 @@ export default function PaymentPage() {
           </Card>
         </TabsContent>
 
-        {/* Agent ERC-8004 */}
+        {/* Agent Delegation */}
         <TabsContent value="agent">
           <Card>
             <CardHeader className="pb-3">

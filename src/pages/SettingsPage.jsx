@@ -22,10 +22,18 @@ export default function SettingsPage() {
     return stored ? JSON.parse(stored) : { name: '', address: '', gst: '' };
   });
 
-  const [delegation, setDelegation] = useState(() => {
-    const stored = localStorage.getItem('agent_delegation');
-    return stored ? JSON.parse(stored) : null;
+  // Fetch user profile from backend to get the secure delegation limit
+  const { data: userProfile, refetch: refetchProfile } = useQuery({
+    queryKey: ['user-profile'],
+    queryFn: async () => {
+      const token = localStorage.getItem('app_access_token');
+      if (!token) return null;
+      const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+      return res.json();
+    },
   });
+
+  const delegationMax = userProfile?.agent_delegation_max || 0;
 
   const { data: invoices = [] } = useQuery({
     queryKey: ['invoices'],
@@ -48,10 +56,23 @@ export default function SettingsPage() {
     toast.success(`Exported ${invoices.length} invoices`);
   };
 
-  const revokeDelegation = () => {
-    localStorage.removeItem('agent_delegation');
-    setDelegation(null);
-    toast.success('Delegation revoked');
+  const revokeDelegation = async () => {
+    try {
+      const token = localStorage.getItem('app_access_token');
+      await fetch('/api/user/delegation', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ maxAmount: 0 })
+      });
+      localStorage.removeItem('agent_delegation'); // Cleanup legacy data
+      await refetchProfile();
+      toast.success('Delegation revoked securely');
+    } catch (err) {
+      toast.error('Failed to revoke delegation');
+    }
   };
 
   const handleLogout = () => {
@@ -111,13 +132,12 @@ export default function SettingsPage() {
           <CardTitle className="text-sm flex items-center gap-2"><Bot className="w-4 h-4" /> Agent Delegation</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          {delegation ? (
+          {delegationMax > 0 ? (
             <>
               <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 space-y-1.5 text-xs text-purple-700">
                 <div className="flex items-center gap-1.5 font-semibold"><Shield className="w-3.5 h-3.5" /> Active Delegation</div>
-                <p>Max: ₹{delegation.maxAmount?.toLocaleString()}</p>
-                <p>Expires: {new Date(delegation.expiry).toLocaleDateString()}</p>
-                <p className="font-mono text-[10px]">Agent: {delegation.agentAddress?.slice(0, 14)}...</p>
+                <p>Max Vault Limit: ₹{delegationMax.toLocaleString()}</p>
+                <p>Enforced by: Secure Backend DB</p>
               </div>
               <Button variant="destructive" size="sm" className="text-xs" onClick={revokeDelegation}>Revoke Delegation</Button>
             </>
