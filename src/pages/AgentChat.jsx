@@ -118,8 +118,39 @@ export default function AgentChat() {
             } catch (e) {
               setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I failed to load the catalog.' }]);
             }
-          } 
-          
+          else if (call.function.name === 'suggest_upsell_bundle') {
+            try {
+              const catRes = await fetch('/.well-known/agent-catalog.json');
+              const catData = await catRes.json();
+              
+              // Find a complementary product
+              const originalItem = args.original_item.toLowerCase();
+              let recommendation = catData.catalog.find(p => !originalItem.includes(p.name.toLowerCase()));
+              
+              // Fallback to first if no strict complement found
+              if (!recommendation) recommendation = catData.catalog[0];
+
+              const toolResponse = `I found a complementary product: ${recommendation.name} for ₹${recommendation.price}. It is highly recommended to bundle this.`;
+              
+              setMessages(prev => [...prev, {
+                role: 'tool',
+                name: 'suggest_upsell_bundle',
+                content: toolResponse
+              }]);
+              
+              // We simulate immediately triggering the next agent step since we lack a real multi-turn orchestrator in this demo loop
+              setTimeout(() => {
+                setMessages(prev => [...prev, {
+                  role: 'assistant',
+                  content: `✨ Since you are getting ${args.original_item}, I highly recommend adding the **${recommendation.name}** for optimal performance (₹${recommendation.price.toLocaleString('en-IN')}). Would you like me to generate a combined invoice for both?`
+                }]);
+              }, 1000);
+
+            } catch (e) {
+              setMessages(prev => [...prev, { role: 'assistant', content: 'I tried to find a bundle, but the catalog is currently unreachable.' }]);
+            }
+          }
+
           else if (call.function.name === 'create_invoice') {
             const newInvoice = await db.entities.Invoice.create({
               invoice_number: 'INV-' + Math.floor(Math.random() * 100000),
@@ -128,55 +159,18 @@ export default function AgentChat() {
               currency: 'INR',
               status: 'draft',
               compliance_score: 95, // AI generated invoices are inherently compliant for demo
-              line_items: [{ description: args.description, quantity: 1, unit_price: args.amount, total: args.amount }]
+              line_items: [{ description: args.description, quantity: 1, unit_price: args.amount, total: args.amount }],
+              is_ai_upsell: args.is_ai_upsell || false
             });
             
             setLastInvoiceId(newInvoice.id);
 
             setMessages(prev => [...prev, {
               role: 'assistant',
-              content: `I have generated invoice ${newInvoice.invoice_number} for ${args.description} at ₹${args.amount}.`,
+              content: `I have generated invoice ${newInvoice.invoice_number} for ${args.description} at ₹${args.amount}. ${args.is_ai_upsell ? 'Great choice on the bundle!' : ''}`,
               uiType: 'invoice',
               uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number } 
             }]);
-
-            // --- TIER 3: AI Growth / Upsell ---
-            try {
-              const catRes = await fetch('/catalog.json');
-              const catData = await catRes.json();
-              
-              const upsellLogic = {
-                'it license': 'prod_cloud_hosting',
-                'cloud hosting': 'prod_network_sec',
-                'network security': 'prod_it_license'
-              };
-              
-              const currentDesc = args.description.toLowerCase();
-              let recommendedId = null;
-              
-              for (const [key, targetId] of Object.entries(upsellLogic)) {
-                if (currentDesc.includes(key)) {
-                  recommendedId = targetId;
-                  break;
-                }
-              }
-              
-              const possibleUpsells = catData.catalog.filter(p => !currentDesc.includes(p.name.toLowerCase()));
-              const upsell = recommendedId 
-                ? catData.catalog.find(p => p.id === recommendedId) 
-                : possibleUpsells[Math.floor(Math.random() * possibleUpsells.length)];
-
-              if (upsell) {
-                setTimeout(() => {
-                  setMessages(prev => [...prev, {
-                    role: 'assistant',
-                    content: `✨ AI Growth Suggestion: Since you are proceeding with ${args.description}, I highly recommend adding ${upsell.name} for optimal performance. It is available in the catalog for ₹${upsell.price.toLocaleString('en-IN')}. Would you like me to generate a new invoice for that as well?`,
-                  }]);
-                }, 2500);
-              }
-            } catch (err) {
-              console.error("Upsell failed:", err);
-            }
           }
 
           else if (call.function.name === 'trigger_payment') {

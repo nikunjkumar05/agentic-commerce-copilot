@@ -283,8 +283,8 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
     INSERT INTO invoices (id, user_id, invoice_number, institution_name, institution_address,
       gst_number, recipient_name, recipient_address, recipient_gst, line_items, subtotal,
       tax_total, grand_total, currency, status, compliance_score, ai_suggestions,
-      invoice_date, due_date, milestones)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+      invoice_date, due_date, milestones, is_ai_upsell)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
   `, [
     id, req.user.id,
     data.invoice_number || `INV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -295,6 +295,7 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
     data.currency || 'INR', data.status || 'draft',
     data.compliance_score || null, JSON.stringify(data.ai_suggestions || []),
     data.invoice_date || null, data.due_date || null, JSON.stringify(data.milestones || []),
+    data.is_ai_upsell ? true : false
   ]);
 
   const result = await query('SELECT * FROM invoices WHERE id = $1', [id]);
@@ -444,6 +445,60 @@ app.get('/api/audit-logs/verify', authMiddleware, async (req, res) => {
 });
 
 import { createAgentSettlementOrder, verifyWebhookSignature, verifySignature } from './razorpay.js';
+
+// --- Agent-to-Agent Commerce (x402 Protocol) ---
+app.post('/api/agent/b2b-buy', authMiddleware, async (req, res) => {
+  const { product_id, quantity = 1 } = req.body;
+  
+  // 1. Validate Product
+  const catalog = [
+    { id: "prod_it_license", price: 5000, name: "Enterprise IT License", tax_rate: 18 },
+    { id: "prod_cloud_hosting", price: 12000, name: "Cloud Hosting", tax_rate: 18 },
+    { id: "prod_network_sec", price: 8500, name: "Network Security Bundle", tax_rate: 18 }
+  ];
+  
+  const product = catalog.find(p => p.id === product_id);
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+  
+  const subtotal = product.price * quantity;
+  const tax = (subtotal * product.tax_rate) / 100;
+  const grand_total = subtotal + tax;
+
+  // 2. Draft the invoice in DB
+  const invoiceNumber = `INV-AI-${Math.floor(1000 + Math.random() * 9000)}`;
+  const invoiceId = uuidv4();
+  await query(`
+    INSERT INTO invoices (id, user_id, invoice_number, recipient_name, line_items, subtotal, tax_total, grand_total, currency, status, invoice_date)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+  `, [
+    invoiceId, req.user.id, invoiceNumber, 'External AI Buyer', 
+    JSON.stringify([{ description: product.name, quantity, price: product.price, total: subtotal }]),
+    subtotal, tax, grand_total, 'INR', 'pending', new Date().toISOString()
+  ]);
+
+  // 3. Create Razorpay Order
+  const order = await createAgentSettlementOrder(grand_total, invoiceNumber, tax);
+  
+  await appendAuditLog(req.user.id, {
+    action: 'x402_handshake_initiated',
+    invoice_id: invoiceId, invoice_number: invoiceNumber, amount: grand_total,
+    details: `AI Buyer requested ${product.name}. Issued HTTP 402 challenge.`
+  });
+
+  // 4. Return HTTP 402 Payment Required!
+  // This is the core of the machine-to-machine protocol.
+  res.status(402)
+     .setHeader('Www-Authenticate', `Razorpay order_id="${order.id}", invoice_id="${invoiceId}"`)
+     .json({
+       error: 'payment_required',
+       message: 'Payment required to fulfill this machine request.',
+       payment_protocol: 'x402_razorpay',
+       order_id: order.id,
+       invoice_id: invoiceId,
+       amount_due: grand_total,
+       currency: 'INR'
+     });
+});
 
 // --- Razorpay Agentic Commerce ---
 app.post('/api/agent/settle', authMiddleware, async (req, res) => {
@@ -860,13 +915,22 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
     {
       type: "function",
       function: {
+        name: "suggest_upsell_bundle",
+        description: "Analyze the user's intent and dynamically suggest a complementary product or bundle from the catalog to increase revenue.",
+        parameters: { type: "object", properties: { original_item: { type: "string" } }, required: ["original_item"] }
+      }
+    },
+    {
+      type: "function",
+      function: {
         name: "create_invoice",
         description: "Create a new invoice for the user's requested items.",
         parameters: { 
           type: "object", 
           properties: { 
             description: { type: "string" },
-            amount: { type: "number" }
+            amount: { type: "number" },
+            is_ai_upsell: { type: "boolean", description: "Set to true ONLY IF this item is being purchased because YOU suggested it via an upsell." }
           }, 
           required: ["description", "amount"] 
         }
@@ -886,7 +950,7 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
     // Hackathon fallback if Mistral key is missing
     const lastMsg = messages[messages.length - 1].content.toLowerCase();
     if (lastMsg.includes('buy') || lastMsg.includes('invoice')) {
-      return res.json({ role: 'assistant', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'create_invoice', arguments: '{"description":"IT Support License","amount":5000}' } }] });
+      return res.json({ role: 'assistant', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'create_invoice', arguments: '{"description":"IT Support License","amount":5000,"is_ai_upsell":false}' } }] });
     }
     if (lastMsg.includes('pay') || lastMsg.includes('settle')) {
       return res.json({ role: 'assistant', tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'trigger_payment', arguments: '{"invoice_id":"demo-id"}' } }] });
@@ -898,7 +962,7 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
     const body = {
       model: MISTRAL_MODEL,
       messages: [
-        { role: "system", content: "You are an autonomous B2B AI Agentic Commerce Co-Pilot. You help buyers search the catalog, create invoices, and settle payments autonomously using the provided tools. Be concise and professional." },
+        { role: "system", content: "You are an autonomous B2B AI Agentic Commerce Co-Pilot. Your goal is to assist the buyer AND grow the merchant's revenue. When a user wants to buy something, ALWAYS use 'suggest_upsell_bundle' first to find a complementary product and pitch it to them before creating the invoice. If they accept the upsell, create the invoice with 'is_ai_upsell' set to true. Be concise, persuasive, and professional." },
         ...messages
       ],
       tools: tools,

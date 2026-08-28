@@ -36,7 +36,10 @@ export default function Dashboard() {
 
   const totalValue = invoices.reduce((sum, inv) => sum + (inv.grand_total || 0), 0);
   const pendingCount = invoices.filter(i => ['draft', 'validated'].includes(i.status)).length;
-  const storedCount = invoices.filter(i => i.cid).length;
+  
+  // Track AI Revenue Lift (Phase 3 Requirement)
+  const aiRevenue = invoices.filter(i => i.is_ai_upsell).reduce((sum, inv) => sum + (inv.grand_total || 0), 0);
+  const aiRevenuePercentage = totalValue > 0 ? Math.round((aiRevenue / totalValue) * 100) : 0;
 
   return (
     <motion.main initial="initial" animate="animate" variants={stagger} className="max-w-3xl mx-auto px-4 pb-32 pt-6 space-y-8">
@@ -51,7 +54,7 @@ export default function Dashboard() {
             </div>
             <div className="text-left">
               <h3 className="text-lg md:text-xl font-bold font-heading text-foreground">AI Commerce Co-Pilot</h3>
-              <p className="text-xs md:text-sm text-muted-foreground">Autonomously generate & settle invoices</p>
+              <p className="text-xs md:text-sm text-muted-foreground">Autonomously generate, cross-sell & settle</p>
             </div>
           </div>
           <div className="w-10 h-10 rounded-full bg-background/50 border border-border flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform">
@@ -63,9 +66,9 @@ export default function Dashboard() {
       {/* Metrics Grid */}
       <motion.div variants={fadeUp} className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <MetricCard icon={FileText} label="Total Invoices" value={invoices.length} variant="default" />
-        <MetricCard icon={IndianRupee} label="Total Value" value={`₹${(totalValue / 100000).toFixed(1)}L`} sublabel="All invoices" variant="success" />
+        <MetricCard icon={IndianRupee} label="Total Value" value={`₹${(totalValue / 1000).toFixed(1)}k`} sublabel="All invoices" variant="success" />
         <MetricCard icon={Clock} label="Pending" value={pendingCount} sublabel="Awaiting action" variant="warning" />
-        <MetricCard icon={Database} label="On IPFS" value={storedCount} sublabel="Decentralized" variant="info" />
+        <MetricCard icon={Bot} label="AI Lift" value={`₹${(aiRevenue / 1000).toFixed(1)}k`} sublabel={`${aiRevenuePercentage}% via upsells`} variant="info" />
       </motion.div>
 
       {/* Recent Invoices Section */}
