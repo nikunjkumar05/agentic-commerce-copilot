@@ -34,4 +34,3 @@ dist-ssr
 .vite
 
 .vercel
-.env*
