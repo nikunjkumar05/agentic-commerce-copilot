@@ -350,7 +350,10 @@ app.delete('/api/invoices/:id', authMiddleware, async (req, res) => {
 
 app.post('/api/ipfs/upload', authMiddleware, async (req, res) => {
   try {
-    const LIGHTHOUSE_API_KEY = process.env.LIGHTHOUSE_API_KEY || 'bc2e8494.ba6f3cae282f465f913ab6b4b8aeaf76';
+    const LIGHTHOUSE_API_KEY = process.env.LIGHTHOUSE_API_KEY;
+    if (!LIGHTHOUSE_API_KEY) {
+      throw new Error('LIGHTHOUSE_API_KEY is not set in environment variables');
+    }
     const payload = JSON.stringify(req.body, null, 2);
     
     // Dynamic import to avoid breaking top-level if SDK isn't found

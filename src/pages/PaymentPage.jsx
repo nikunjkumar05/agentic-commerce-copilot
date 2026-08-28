@@ -162,7 +162,7 @@ export default function PaymentPage() {
 
       // Open Razorpay Checkout
       const options = {
-        key: 'rzp_test_TTM5dEUPPr7DzD', // Hardcoded test key for hackathon reliability
+        key: import.meta.env.VITE_RAZORPAY_KEY_ID, // Use env variable instead of hardcoded key
         amount: Math.round(invoice.grand_total * 100),
         currency: invoice.currency || 'INR',
         name: 'Agentic Commerce Co-Pilot',
