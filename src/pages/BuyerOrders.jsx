@@ -56,7 +56,9 @@ export default function BuyerOrders() {
                     <div className="flex-1">
                       <div className="flex items-start justify-between w-full">
                         <div>
-                          <h4 className="font-bold text-gray-900 text-lg">Order {order.invoice_number}</h4>
+                          <h4 className="font-semibold text-gray-900 text-lg tracking-tight">
+                            Order <span className="font-mono text-gray-600 ml-1">{order.invoice_number}</span>
+                          </h4>
                           <p className="text-sm text-gray-500 mt-1">
                             Placed on {new Date(order.created_date).toLocaleDateString()}
                           </p>
