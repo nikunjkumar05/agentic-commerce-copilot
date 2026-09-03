@@ -54,16 +54,16 @@ export default function BuyerOrders() {
                       <Package className="w-6 h-6 text-indigo-600" />
                     </div>
                     <div className="flex-1">
-                      <div className="flex items-start justify-between w-full">
+                      <div className="flex items-start justify-between w-full gap-4">
                         <div>
-                          <h4 className="font-semibold text-gray-900 text-lg tracking-tight">
+                          <h4 className="font-semibold text-gray-900 text-lg tracking-tight break-all">
                             Order <span className="font-mono text-gray-600 ml-1">{order.invoice_number}</span>
                           </h4>
                           <p className="text-sm text-gray-500 mt-1">
                             Placed on {new Date(order.created_date).toLocaleDateString()}
                           </p>
                         </div>
-                        <Button variant="outline" size="sm" onClick={() => generateInvoicePDF(order)} className="hidden md:flex gap-2">
+                        <Button variant="outline" size="sm" onClick={() => generateInvoicePDF(order)} className="hidden md:flex shrink-0 gap-2">
                           <Download className="w-4 h-4" /> Download PDF
                         </Button>
                       </div>
