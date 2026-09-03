@@ -49,6 +49,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
       const tax_total = Math.round(subtotal * 0.18);
       const grand_total = subtotal + tax_total;
       const line_items = fallbackCart.map(i => ({
+        sku: i.sku,
         description: i.name,
         quantity: i.quantity,
         unit_price: i.price,
@@ -335,14 +336,15 @@ const [fallbackMode, setFallbackMode] = useState(false);
             const taxRate = 18;
             
             const line_items = itemsList.map(item => {
-              const baseAmount = Number(item.amount || 0);
+              const baseAmount = Number(item.negotiated_price || item.amount || 0);
               const qty = Number(item.quantity || 1);
               const tax = Math.round(baseAmount * qty * taxRate / 100);
               const totalAmount = baseAmount * qty;
               subtotal += totalAmount;
               tax_total += tax;
               return {
-                description: item.description,
+                sku: item.sku,
+                description: item.description || item.sku,
                 quantity: qty,
                 unit_price: baseAmount,
                 tax_rate: taxRate,
@@ -351,38 +353,47 @@ const [fallbackMode, setFallbackMode] = useState(false);
             });
             
             const grand_total = subtotal + tax_total;
-            const itemNames = line_items.map(i => i.description).join(' + ');
+            const itemNames = line_items.map(i => i.sku || i.description).join(' + ');
 
-            const newInvoice = await db.entities.Invoice.create({
-              invoice_number: 'INV-' + Math.floor(Math.random() * 100000),
-              institution_name: profile.name || 'AgentPay Gateway',
-              institution_address: profile.address || 'New Delhi, India',
-              gst_number: profile.gst || '07AAACN0372J1ZB',
-              recipient_name: buyerProfile.name || 'AI Agent Buyer',
-              recipient_address: buyerProfile.address || 'New Delhi, India',
-              recipient_gst: '',
-              line_items: line_items,
-              subtotal,
-              tax_total,
-              grand_total,
-              currency: 'INR',
-              status: 'draft',
-              invoice_date: today,
-              due_date: due,
-              compliance_score: null,
-              is_ai_upsell: args.is_ai_upsell || false
-            });
+            try {
+              const newInvoice = await db.entities.Invoice.create({
+                invoice_number: 'INV-' + Math.floor(Math.random() * 100000),
+                institution_name: profile.name || 'AgentPay Gateway',
+                institution_address: profile.address || 'New Delhi, India',
+                gst_number: profile.gst || '07AAACN0372J1ZB',
+                recipient_name: buyerProfile.name || 'AI Agent Buyer',
+                recipient_address: buyerProfile.address || 'New Delhi, India',
+                recipient_gst: '',
+                line_items: line_items,
+                subtotal,
+                tax_total,
+                grand_total,
+                currency: 'INR',
+                status: 'draft',
+                invoice_date: today,
+                due_date: due,
+                compliance_score: null,
+                is_ai_upsell: args.is_ai_upsell || false
+              });
 
-            setLastInvoiceId(newInvoice.id);
+              setLastInvoiceId(newInvoice.id);
 
-            setMessages(prev => [...prev, {
-              role: 'tool',
-              tool_call_id: call.id,
-              name: 'create_invoice',
-              content: `I have generated invoice ${newInvoice.invoice_number} for ${itemNames} at ₹${subtotal}. ${args.is_ai_upsell ? 'Great choice on the bundle!' : ''} ⚠️ Note: as an agent I cannot grade my own work — this invoice needs human validation before I am allowed to settle it autonomously.`,
-              uiType: 'invoice',
-              uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number }
-            }]);
+              setMessages(prev => [...prev, {
+                role: 'tool',
+                tool_call_id: call.id,
+                name: 'create_invoice',
+                content: `I have generated invoice ${newInvoice.invoice_number} for ${itemNames} at ₹${subtotal}. ${args.is_ai_upsell ? 'Great choice on the bundle!' : ''} 🎯 Note: as an agent I cannot grade my own work - this invoice needs human validation before I am allowed to settle it autonomously.`,
+                uiType: 'invoice',
+                uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number }
+              }]);
+            } catch (err) {
+              setMessages(prev => [...prev, {
+                role: 'tool',
+                tool_call_id: call.id,
+                name: 'create_invoice',
+                content: `Failed to create invoice: ${err.message}. If this is a margin floor violation, you must negotiate a higher price.`
+              }]);
+            }
           }
 
           else if (call.function.name === 'update_invoice') {
@@ -397,14 +408,15 @@ const [fallbackMode, setFallbackMode] = useState(false);
               const taxRate = 18;
               
               const line_items = itemsList.map(item => {
-                const baseAmount = Number(item.amount || 0);
+                const baseAmount = Number(item.negotiated_price || item.amount || 0);
                 const qty = Number(item.quantity || 1);
                 const tax = Math.round(baseAmount * qty * taxRate / 100);
                 const totalAmount = baseAmount * qty;
                 subtotal += totalAmount;
                 tax_total += tax;
                 return {
-                  description: item.description,
+                  sku: item.sku,
+                  description: item.description || item.sku,
                   quantity: qty,
                   unit_price: baseAmount,
                   tax_rate: taxRate,
@@ -431,7 +443,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                 uiData: { id: existing.id, invoice_number: existing.invoice_number }
               }]);
             } catch (err) {
-              setMessages(prev => [...prev, { role: 'tool', tool_call_id: call.id, name: 'update_invoice', content: `Failed to update invoice: ${err.message}` }]);
+              setMessages(prev => [...prev, { role: 'tool', tool_call_id: call.id, name: 'update_invoice', content: `Failed to update invoice: ${err.message}. If this is a margin floor violation, you must negotiate a higher price.` }]);
             }
           }
 

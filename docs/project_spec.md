@@ -27,9 +27,9 @@ The AI Agent is a Mistral-powered conversational bot functioning as a Senior Ent
 - **Idempotency in Chat**: The UI ensures `tool_calls` and normal responses are parsed sequentially without duplicating responses in the chat history state.
 
 ## 4. CFO Mandate & Autonomous Settlement (x402 Protocol)
-The system allows B2B buyers to delegate purchasing power to the AI.
-- **Delegation Caps**: Buyers set a per-transaction `delegation_max` and a `daily_limit`.
-- **System Prompt Injection**: These financial limits are dynamically injected into the AI's system prompt on every turn. The AI uses this as a hard boundary for upsells (e.g., "Do not recommend upsells that exceed the daily limit of ₹10,000").
+- **Delegated AI Budgets**: Buyers can allocate a `daily_budget` and a `per_transaction_max` to their AI agent.
+- **Machine-to-Machine API (x402)**: The AI buyer uses `/api/agent/v1/catalog` to discover products, `/api/agent/v1/quote` to negotiate prices, and receives an HTTP `402 Payment Required` challenge along with a Razorpay `order_id` in the `Www-Authenticate` header. It then completes the handshake via `/api/agent/v1/settle`.
+- **Tokenized Settlement**: The buyer agent securely settles 402 challenges via Server-to-Server (S2S) calls using a saved Razorpay Mandate/Token (Card on file), completely bypassing human checkout UI.
 - **Safety Gate**: Before an autonomous payment (`trigger_payment`) succeeds, the backend checks:
   - Is the invoice amount $\le$ `delegation_max`?
   - Has the `daily_limit` been exhausted?
@@ -44,11 +44,10 @@ The system allows B2B buyers to delegate purchasing power to the AI.
   - Amount Guards: Prevents "payment successful" state if the Razorpay captured amount differs from the internal DB `grand_total` by even 1 paisa.
 - **Cryptographic Hash Chain (Ledger)**: Every critical action (invoice creation, webhook arrival, payment attempt) writes to `audit_logs`. Each row calculates a SHA-256 hash incorporating the previous row's hash (`hash = SHA256(prev_hash + action + details)`). The frontend includes a "Verify Integrity" button that recalculates the entire chain in-browser to detect database tampering.
 
-## 6. Dynamic Tax Routing (Razorpay Route)
-- Implements B2B tax splitting based on GSTIN (Goods and Services Tax Identification Number) state codes (first two digits).
-- **Intra-state (Same State)**: Splits tax into 9% CGST (Central) and 9% SGST (State).
-- **Inter-state (Different States)**: Applies 18% IGST (Integrated).
-- **Razorpay Route Integration**: The backend automatically constructs Razorpay Route transfer arrays to automatically funnel the exact calculated tax amounts to designated government/tax nodal accounts at the moment of payment capture.
+## 6. Dynamic Tax Splitting (Razorpay Route)
+- Demonstrates B2B tax calculation based on GSTIN (Goods and Services Tax Identification Number) state codes (first two digits).
+- **Intra-state (Same State)**: Calculates tax as 9% CGST (Central) and 9% SGST (State).
+- **Razorpay Route Integration**: The backend automatically constructs Razorpay Route transfer arrays to split the calculated tax amounts to designated sub-merchant accounts at the moment of payment capture, simulating a compliance withholding model (note: does not natively remit to government tax nodal accounts).
 
 ## 7. Campaigns & Upsell Orchestrator
 - **CFO Campaign Manager**: Merchants can launch bulk upsell campaigns targeting specific buyer segments (e.g., users who bought Product A but not Product B).

@@ -21,33 +21,45 @@ export async function appendAuditLog(userId, data) {
 
     // 1. Get previous hash for the chain
     const lastLog = await client.query(
-      'SELECT hash FROM audit_logs WHERE user_id = $1 ORDER BY created_date DESC LIMIT 1',
+      'SELECT hash FROM audit_logs WHERE user_id = $1 ORDER BY sequence_num DESC, created_date DESC LIMIT 1',
       [userId]
     );
     const prev_hash = lastLog.rows.length > 0 && lastLog.rows[0].hash ? lastLog.rows[0].hash : '0'.repeat(64);
-    
-    // 2. Compute SHA-256 of payload + prev_hash
     const timestamp = data.created_date || new Date().toISOString();
+
+    // 2. Insert row to get the auto-generated sequence_num
+    const insertRes = await client.query(`
+      INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount,
+        agent_address, owner_address, tx_hash, details, created_date, prev_hash)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      RETURNING sequence_num
+    `, [
+      id, userId, data.action, data.invoice_id || null, data.invoice_number || null,
+      data.amount || null, data.agent_address || null, data.owner_address || null, data.tx_hash || null, data.details || null,
+      timestamp, prev_hash
+    ]);
+
+    const seq = insertRes.rows[0].sequence_num;
+
+    // 3. Compute full canonical SHA-256 over ALL fields to prevent tampering
     const payload = JSON.stringify({
       user_id: userId,
+      sequence_num: Number(seq),
       action: data.action,
       invoice_id: data.invoice_id || null,
+      invoice_number: data.invoice_number || null,
       amount: data.amount || null,
+      agent_address: data.agent_address || null,
+      owner_address: data.owner_address || null,
+      tx_hash: data.tx_hash || null,
+      details: data.details || null,
       prev_hash: prev_hash,
       timestamp: timestamp
     });
     const hash = crypto.createHash('sha256').update(payload).digest('hex');
 
-    // 3. Store hash and prev_hash
-    await client.query(`
-      INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount,
-        agent_address, owner_address, tx_hash, details, created_date, hash, prev_hash)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-    `, [
-      id, userId, data.action, data.invoice_id || null, data.invoice_number || null,
-      data.amount || null, data.agent_address || null, data.owner_address || null, data.tx_hash || null, data.details,
-      timestamp, hash, prev_hash
-    ]);
+    // 4. Store hash
+    await client.query('UPDATE audit_logs SET hash = $1 WHERE id = $2', [hash, id]);
 
     return id;
   });
@@ -151,25 +163,12 @@ async function enforceMandate(invoice) {
 
 async function enforceBudget(userId, amount, delegation_max) {
   const today = new Date().toISOString().slice(0, 10);
-  const userRes = await query(
-    `SELECT agent_daily_limit, agent_daily_spent, daily_reset_date
-     FROM users WHERE id = $1 FOR UPDATE`,
-    [userId]
+  
+  // Auto-reset the daily counter at midnight
+  await query(
+    'UPDATE users SET agent_daily_spent = 0, daily_reset_date = $1 WHERE id = $2 AND daily_reset_date IS DISTINCT FROM $1',
+    [today, userId]
   );
-  const u = userRes.rows[0] || {};
-  const dailyLimit = Number(u.agent_daily_limit || 0);
-  let dailySpent = Number(u.agent_daily_spent || 0);
-  const resetDate = u.daily_reset_date;
-
-  // Auto-reset the daily counter at midnight — important so the limit isn't
-  // a one-way ratchet that locks out the merchant after day one.
-  if (resetDate !== today) {
-    dailySpent = 0;
-    await query(
-      'UPDATE users SET agent_daily_spent = 0, daily_reset_date = $1 WHERE id = $2',
-      [today, userId]
-    );
-  }
 
   if (amount > delegation_max) {
     return {
@@ -187,7 +186,22 @@ async function enforceBudget(userId, amount, delegation_max) {
     };
   }
 
-  if (dailyLimit > 0 && dailySpent + amount > dailyLimit) {
+  // Atomic Reservation: bump the counter ONLY if it won't exceed the limit
+  const reserveRes = await query(
+    `UPDATE users 
+     SET agent_daily_spent = agent_daily_spent + $1 
+     WHERE id = $2 AND (agent_daily_limit = 0 OR agent_daily_spent + $1 <= agent_daily_limit) 
+     RETURNING agent_daily_limit, agent_daily_spent`,
+    [amount, userId]
+  );
+
+  if (reserveRes.rowCount === 0) {
+    // The atomic update failed because it would exceed the limit.
+    // Fetch the actual current values to return a good error message.
+    const uRes = await query('SELECT agent_daily_limit, agent_daily_spent FROM users WHERE id = $1', [userId]);
+    const dailyLimit = Number(uRes.rows[0]?.agent_daily_limit || 0);
+    const dailySpent = Number(uRes.rows[0]?.agent_daily_spent || 0);
+    
     return {
       status: 403,
       body: {
@@ -205,11 +219,6 @@ async function enforceBudget(userId, amount, delegation_max) {
     };
   }
 
-  // Reservation: bump the counter so concurrent requests cannot both pass.
-  await query(
-    'UPDATE users SET agent_daily_spent = agent_daily_spent + $1 WHERE id = $2',
-    [amount, userId]
-  );
   return null;
 }
 
@@ -689,53 +698,57 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
   // Fixes bug where AgentChat sent grand_total:10000 with line_items total:10000 but subtotal:0 tax:0.
   let lineItems = data.line_items || [];
   if (typeof lineItems === 'string') { try { lineItems = JSON.parse(lineItems); } catch { lineItems = []; } }
-  let subtotal = data.subtotal;
-  let tax_total = data.tax_total;
-  let grand_total = data.grand_total;
-  if (Array.isArray(lineItems) && lineItems.length > 0) {
-    const calcSubtotal = lineItems.reduce((s, it) => s + Number(it.quantity ?? it.qty ?? 1) * Number(it.unit_price ?? it.price ?? it.rate ?? 0), 0);
-    const calcTax = lineItems.reduce((s, it) => {
-      const base = Number(it.quantity ?? it.qty ?? 1) * Number(it.unit_price ?? it.price ?? it.rate ?? 0);
-      return s + base * (Number(it.tax_rate ?? it.taxRate ?? 18) / 100);
-    }, 0);
-    // Use calculated values when caller sent 0/undefined or mismatched (agent case)
-    if (!subtotal || Math.abs(subtotal - calcSubtotal) > 0.01) subtotal = calcSubtotal;
-    if (tax_total == null || Math.abs(tax_total - calcTax) > 0.01) tax_total = Math.round(calcTax);
-    const calcGrand = subtotal + tax_total;
-    if (!grand_total || Math.abs(grand_total - calcGrand) > 0.01) grand_total = calcGrand;
-    // Normalize line_items totals to qty*unit_price
-    lineItems = lineItems.map(it => ({
-      ...it,
-      quantity: Number(it.quantity ?? it.qty ?? 1),
-      unit_price: Number(it.unit_price ?? it.price ?? it.rate ?? 0),
-      tax_rate: Number(it.tax_rate ?? it.taxRate ?? 18),
-      total: Number(it.quantity ?? it.qty ?? 1) * Number(it.unit_price ?? it.price ?? it.rate ?? 0),
-    }));
-  }
-  const today = new Date().toISOString().split('T')[0];
-  const dueDefault = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
-
-  // --- Margin Floor Guardrail ---
-  const products = await query('SELECT name, margin_floor FROM products');
+  
   let complianceScore = data.compliance_score || null;
   const aiSuggestions = data.ai_suggestions || [];
   let status = data.status || 'draft';
 
-  for (const item of lineItems) {
-    const matchedProduct = products.rows.find(p => item.description?.toLowerCase().includes(p.name.toLowerCase()));
-    if (matchedProduct) {
-      if (item.unit_price < matchedProduct.margin_floor) {
-        complianceScore = 0;
-        status = 'draft';
-        aiSuggestions.push({
-          field: 'line_items',
-          issue: 'CRITICAL: Margin floor violation',
-          suggestion: `Agent attempted to sell ${matchedProduct.name} at ₹${item.unit_price}, which is below the margin floor of ₹${matchedProduct.margin_floor}. Escalated to human review.`,
-          severity: 'critical'
+  // --- Strict Server-Side Pricing & Margin Floor Guardrail ---
+  const products = await query('SELECT sku, name, margin_floor, price, hsn_code FROM products');
+  
+  for (let i = 0; i < lineItems.length; i++) {
+    const item = lineItems[i];
+    
+    // Fail-closed guard: always resolve against DB catalog by sku OR description
+    const dbProduct = item.sku 
+      ? products.rows.find(p => p.sku === item.sku)
+      : products.rows.find(p => item.description?.toLowerCase().includes(p.name.toLowerCase()));
+      
+    if (dbProduct) {
+      item.sku = dbProduct.sku;
+      item.description = dbProduct.name;
+      item.hsn_code = dbProduct.hsn_code;
+      // Allow negotiation down to margin floor, default to list price
+      const requestedPrice = item.negotiated_price ?? item.unit_price ?? item.price ?? dbProduct.price;
+      
+      if (requestedPrice < dbProduct.margin_floor) {
+        return res.status(400).json({ 
+          error: 'margin_floor_violation', 
+          message: `Price ₹${requestedPrice} for ${dbProduct.name} is below the strict margin floor of ₹${dbProduct.margin_floor}.`
         });
       }
+      item.unit_price = requestedPrice;
+    } else {
+      // If we can't find it in the DB, it's an unrecognized SKU or custom item.
+      // If it has a SKU, it's explicitly invalid.
+      if (item.sku) {
+        return res.status(400).json({ error: 'invalid_sku', message: `Product SKU ${item.sku} not found.` });
+      }
+      // Otherwise, we allow custom non-catalog items without floor logic.
     }
+    
+    item.quantity = Number(item.quantity ?? item.qty ?? 1);
+    item.unit_price = Number(item.unit_price ?? item.price ?? item.rate ?? 0);
+    item.tax_rate = Number(item.tax_rate ?? item.taxRate ?? 18);
+    item.total = item.quantity * item.unit_price;
   }
+
+  const subtotal = lineItems.reduce((s, it) => s + it.total, 0);
+  const tax_total = Math.round(lineItems.reduce((s, it) => s + it.total * (it.tax_rate / 100), 0));
+  const grand_total = subtotal + tax_total;
+
+  const today = new Date().toISOString().split('T')[0];
+  const dueDefault = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
 
   await query(`
     INSERT INTO invoices (id, user_id, invoice_number, institution_name, institution_address,
@@ -745,7 +758,7 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
   `, [
     id, req.user.id,
-    data.invoice_number || `INV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+    data.invoice_number || `INV-${Math.floor(Math.random() * 100000)}`,
     data.institution_name || 'Agentic Commerce Co-Pilot', data.institution_address || 'New Delhi, India', data.gst_number || '07AAACN0372J1ZB',
     data.recipient_name || null, data.recipient_address || null, data.recipient_gst || null,
     JSON.stringify(lineItems), subtotal || 0,
@@ -777,28 +790,49 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
     'ai_suggestions', 'invoice_date', 'due_date', 'milestones', 'cid',
     'tx_hash', 'payment_method', 'status'
   ]);
-
   for (const [key, value] of Object.entries(data)) {
     if (!ALLOWED_UPDATE_FIELDS.has(key)) continue;
     
     let processedValue = value;
     if (key === 'line_items') {
-      const products = await query('SELECT name, margin_floor FROM products');
+      const products = await query('SELECT sku, name, margin_floor, price, hsn_code FROM products');
       const items = typeof value === 'string' ? JSON.parse(value) : value;
       for (const item of items) {
-        const matchedProduct = products.rows.find(p => item.description?.toLowerCase().includes(p.name.toLowerCase()));
-        if (matchedProduct && item.unit_price < matchedProduct.margin_floor) {
-          data.compliance_score = 0;
-          data.status = 'draft';
-          data.ai_suggestions = data.ai_suggestions || [];
-          data.ai_suggestions.push({
-            field: 'line_items',
-            issue: 'CRITICAL: Margin floor violation during update',
-            suggestion: `Agent attempted to update ${matchedProduct.name} to ₹${item.unit_price}, which is below the margin floor of ₹${matchedProduct.margin_floor}. Escalated to human review.`,
-            severity: 'critical'
-          });
+        const dbProduct = item.sku 
+          ? products.rows.find(p => p.sku === item.sku)
+          : products.rows.find(p => item.description?.toLowerCase().includes(p.name.toLowerCase()));
+          
+        if (dbProduct) {
+          item.sku = dbProduct.sku;
+          item.description = dbProduct.name;
+          item.hsn_code = dbProduct.hsn_code;
+          const requestedPrice = item.negotiated_price ?? item.unit_price ?? item.price ?? dbProduct.price;
+          
+          if (requestedPrice < dbProduct.margin_floor) {
+            return res.status(400).json({ 
+              error: 'margin_floor_violation', 
+              message: `Price ₹${requestedPrice} for ${dbProduct.name} is below the strict margin floor of ₹${dbProduct.margin_floor}.`
+            });
+          }
+          item.unit_price = requestedPrice;
+        } else if (item.sku) {
+          return res.status(400).json({ error: 'invalid_sku', message: `Product SKU ${item.sku} not found.` });
         }
+        item.quantity = Number(item.quantity ?? item.qty ?? 1);
+        item.unit_price = Number(item.unit_price ?? item.price ?? item.rate ?? 0);
+        item.tax_rate = Number(item.tax_rate ?? item.taxRate ?? 18);
+        item.total = item.quantity * item.unit_price;
       }
+      
+      // Auto-recalculate totals
+      const calcSubtotal = items.reduce((s, it) => s + it.total, 0);
+      const calcTax = Math.round(items.reduce((s, it) => s + it.total * (it.tax_rate / 100), 0));
+      const calcGrand = calcSubtotal + calcTax;
+      
+      data.subtotal = calcSubtotal;
+      data.tax_total = calcTax;
+      data.grand_total = calcGrand;
+      
       processedValue = items;
     }
 
@@ -907,8 +941,8 @@ app.get('/api/audit-logs/verify', authMiddleware, async (req, res) => {
   // parsing it as a JS Date would apply the server's timezone (TIMESTAMP WITHOUT
   // TIME ZONE) and break hash recomputation on non-UTC machines.
   const result = await query(
-    `SELECT id, user_id, action, invoice_id, amount, prev_hash, hash, created_date::text AS created_ts
-     FROM audit_logs WHERE user_id = $1 ORDER BY created_date ASC, id ASC`,
+    `SELECT id, user_id, action, invoice_id, invoice_number, amount, agent_address, owner_address, tx_hash, details, prev_hash, hash, sequence_num, created_date::text AS created_ts
+     FROM audit_logs WHERE user_id = $1 ORDER BY sequence_num ASC, created_date ASC, id ASC`,
     [req.user.id]
   );
 
@@ -937,19 +971,35 @@ app.get('/api/audit-logs/verify', authMiddleware, async (req, res) => {
       break;
     }
 
-    // 2. Recompute the hash of the current payload
-    const payload = JSON.stringify({
+    // 2. Recompute the hash of the current payload over ALL fields (V2)
+    const payloadV2 = JSON.stringify({
       user_id: log.user_id,
+      sequence_num: Number(log.sequence_num),
       action: log.action,
       invoice_id: log.invoice_id || null,
+      invoice_number: log.invoice_number || null,
       amount: log.amount || null,
+      agent_address: log.agent_address || null,
+      owner_address: log.owner_address || null,
+      tx_hash: log.tx_hash || null,
+      details: log.details || null,
       prev_hash: log.prev_hash,
       timestamp: toUtcIso(log.created_ts)
     });
-    const computedHash = crypto.createHash('sha256').update(payload).digest('hex');
+    
+    // Legacy V1 payload
+    const payloadV1 = JSON.stringify({
+      action: log.action,
+      details: log.details || null,
+      prev_hash: log.prev_hash,
+      timestamp: toUtcIso(log.created_ts)
+    });
+    
+    const computedHashV2 = crypto.createHash('sha256').update(payloadV2).digest('hex');
+    const computedHashV1 = crypto.createHash('sha256').update(payloadV1).digest('hex');
 
-    // 3. Verify it matches the stored hash
-    if (computedHash !== log.hash) {
+    // 3. Verify it matches the stored hash (allow V1 or V2)
+    if (log.hash !== computedHashV2 && log.hash !== computedHashV1) {
       brokenLogId = log.id;
       break;
     }
@@ -1080,11 +1130,117 @@ app.post('/api/checkout/order', authMiddleware, async (req, res) => {
 });
 
 // The buyer agent completes the 402 challenge: pays the merchant's order S2S.
-app.post('/api/agent/b2b-pay', authMiddleware, agentSettleRateLimiter, async (req, res) => {
+// --- REAL A2A PROTOCOL (x402) ---
+
+app.get('/api/agent/v1/catalog', authMiddleware, async (req, res) => {
+  const products = await query('SELECT sku, name, description, price, hsn_code FROM products');
+  res.json({
+    protocol: 'x402',
+    merchant: 'AgentPay Gateway',
+    currency: 'INR',
+    items: products.rows
+  });
+});
+
+app.post('/api/agent/v1/quote', authMiddleware, async (req, res) => {
+  const { line_items } = req.body;
+  if (!Array.isArray(line_items) || line_items.length === 0) {
+    return res.status(400).json({ error: 'bad_request', message: 'line_items required' });
+  }
+
+  const productsRes = await query('SELECT sku, name, margin_floor, price, hsn_code FROM products');
+  const products = productsRes.rows;
+  
+  let subtotal = 0;
+  let tax_total = 0;
+  const processedItems = [];
+
+  for (const item of line_items) {
+    if (!item.sku) return res.status(400).json({ error: 'invalid_item', message: 'sku required' });
+    const dbProduct = products.find(p => p.sku === item.sku);
+    if (!dbProduct) return res.status(400).json({ error: 'invalid_sku', message: `SKU ${item.sku} not found` });
+
+    const price = item.negotiated_price ?? dbProduct.price;
+    if (price < dbProduct.margin_floor) {
+      return res.status(400).json({ 
+        error: 'margin_floor_violation', 
+        message: `Price ${price} below margin floor ${dbProduct.margin_floor} for ${dbProduct.name}`
+      });
+    }
+
+    const qty = Number(item.quantity || 1);
+    const taxRate = 18; // Default GST
+    const itemTotal = price * qty;
+    const itemTax = Math.round(itemTotal * taxRate / 100);
+    
+    subtotal += itemTotal;
+    tax_total += itemTax;
+    
+    processedItems.push({
+      sku: dbProduct.sku,
+      description: dbProduct.name,
+      hsn_code: dbProduct.hsn_code,
+      quantity: qty,
+      unit_price: price,
+      tax_rate: taxRate,
+      total: itemTotal
+    });
+  }
+
+  const grand_total = subtotal + tax_total;
+  const merchant = await getOrCreateMerchant();
+  const invoiceNumber = `A2A-${Math.floor(Math.random() * 1000000)}`;
+  const invoiceId = uuidv4();
+
+  // Create Razorpay Order
+  const { order } = await createAgentSettlementOrder(
+    grand_total, 
+    invoiceNumber, 
+    tax_total, 
+    computeTaxSplit({ subtotal, rate: 18, sellerGstin: null, buyerGstin: null })
+  );
+
+  // Save as pending draft anchored to the order
+  await query(`
+    INSERT INTO invoices (id, user_id, invoice_number, institution_name, institution_address,
+      line_items, subtotal, tax_total, grand_total, currency, status, tx_hash,
+      invoice_date, due_date)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),NOW())
+  `, [
+    invoiceId, req.user.id, invoiceNumber, merchant.name, 'New Delhi, India',
+    JSON.stringify(processedItems), subtotal, tax_total, grand_total, 'INR', 'pending', order.id
+  ]);
+
+  await appendAuditLog(req.user.id, {
+    action: 'x402_handshake_initiated',
+    invoice_id: invoiceId, invoice_number: invoiceNumber, amount: grand_total,
+    details: `A2A quote generated for AI Buyer. Issued HTTP 402 challenge (${order.id}).`
+  });
+
+  // The true machine-readable x402 challenge
+  res.status(402)
+     .setHeader('Www-Authenticate', `Razorpay order_id="${order.id}", invoice_id="${invoiceId}"`)
+     .json({
+       error: 'payment_required',
+       message: 'Payment required to fulfill this machine request.',
+       payment_protocol: 'x402_razorpay',
+       order_id: order.id,
+       invoice_id: invoiceId,
+       amount_due: grand_total,
+       currency: 'INR',
+       next_step: 'POST /api/agent/v1/settle with { invoice_id, order_id }'
+     });
+});
+
+async function handleSettleB2BPay(req, res) {
   const { invoice_id, order_id } = req.body;
   if (!invoice_id || !order_id) {
     return res.status(400).json({ error: 'bad_request', message: 'invoice_id and order_id (from the 402 challenge) are required.' });
   }
+
+  // Fetch buyer's mandate details
+  const userRes = await query('SELECT razorpay_customer_id, razorpay_token_id FROM users WHERE id = $1', [req.user.id]);
+  const { razorpay_customer_id, razorpay_token_id } = userRes.rows[0] || {};
 
   // The challenge must match: invoice exists AND was anchored to THIS order
   const invRes = await query('SELECT * FROM invoices WHERE id = $1 AND tx_hash = $2', [invoice_id, order_id]);
@@ -1109,10 +1265,10 @@ app.post('/api/agent/b2b-pay', authMiddleware, agentSettleRateLimiter, async (re
   }
 
   try {
-    const settlement = await captureAutonomousPayment(order_id, invoice.grand_total);
+    const settlement = await captureAutonomousPayment(order_id, invoice.grand_total, razorpay_token_id, razorpay_customer_id);
 
     if (settlement.mode === 'mandate_captured') {
-      // Money moved — Razorpay-verified capture
+      // Money moved - Razorpay-verified capture
       await query(
         "UPDATE invoices SET status = 'paid', tx_hash = $1, payment_method = 'razorpay_x402', updated_date = NOW() WHERE id = $2",
         [settlement.payment.id, invoice.id]
@@ -1142,7 +1298,7 @@ app.post('/api/agent/b2b-pay', authMiddleware, agentSettleRateLimiter, async (re
       });
     }
 
-    // Buyer agent has no mandate token — the challenge stays open, a real
+    // Buyer agent has no mandate token - the challenge stays open, a real
     // Payment Link is issued for a human to complete. Honest escalation.
     await query("UPDATE invoices SET status = 'pending', updated_date = NOW() WHERE id = $1", [invoice.id]);
     await appendAuditLog(req.user.id, {
@@ -1163,7 +1319,10 @@ app.post('/api/agent/b2b-pay', authMiddleware, agentSettleRateLimiter, async (re
     console.error('x402 payment error:', err);
     return res.status(500).json({ error: 'payment_error', message: err.message });
   }
-});
+}
+
+app.post('/api/agent/v1/settle', authMiddleware, agentSettleRateLimiter, handleSettleB2BPay);
+app.post('/api/agent/b2b-pay', authMiddleware, agentSettleRateLimiter, handleSettleB2BPay);
 
 
 
@@ -1620,16 +1779,33 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
   const isValid = verifyWebhookSignature(req.rawBody || JSON.stringify(req.body), signature);
   if (!isValid) return res.status(400).send('Invalid signature');
 
-  // Always 200 quickly — Razorpay retries on non-2xx and we don't want storms
   const event = req.body.event;
   const payment = req.body.payload?.payment?.entity;
   const order = req.body.payload?.order?.entity;
   const receipt = payment?.notes?.receipt || order?.receipt;
   const orderId = payment?.order_id || order?.id;
+  
+  // Razorpay may or may not send x-razorpay-event-id. 
+  // Fall back to deriving it from payload to ensure production webhook idempotency.
+  const webhookEventId = req.headers['x-razorpay-event-id'] || crypto.createHash('sha256').update(`${req.body.event}_${req.body.created_at}_${payment?.id || orderId || 'no_id'}`).digest('hex');
+
+  // IDEMPOTENCY: Check processed_webhook_events table
+  try {
+    const insertRes = await query(
+      "INSERT INTO processed_webhook_events (event_id, payment_id, invoice_id) VALUES ($1, $2, $3) ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+      [webhookEventId, payment?.id || null, receipt || null]
+    );
+    if (insertRes.rows.length === 0) {
+      console.log(`[Webhook] Duplicate event ${webhookEventId} ignored.`);
+      return res.status(200).send('Already processed');
+    }
+  } catch (err) {
+    console.error('Webhook idempotency error:', err);
+    throw err;
+  }
 
   if (event === 'payment.captured' || event === 'order.paid') {
-    // Locate the invoice by receipt (order creation path) OR by the order_id
-    // we anchored into tx_hash during Payment-Link escalation (Unit 1 path)
+    // Locate the invoice strictly by order_id (which is anchored into tx_hash) OR by receipt
     const invRes = await query(
       'SELECT id, user_id, invoice_number, grand_total, status, tx_hash FROM invoices WHERE invoice_number = $1 OR tx_hash = $2',
       [receipt, orderId]
@@ -1639,6 +1815,18 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
     if (!inv) {
       console.warn(`[WEBHOOK] ${event}: no invoice matches receipt='${receipt}' order='${orderId}'`);
       return res.json({ status: 'ok', note: 'invoice_not_found' });
+    }
+
+    // RELATIONSHIP BINDING GUARD: Ensure the webhook's orderId actually matches the orderId we generated (stored in tx_hash if not yet paid)
+    if (inv.status !== 'paid' && inv.tx_hash !== orderId) {
+      await appendAuditLog(inv.user_id, {
+        action: 'webhook_relationship_mismatch',
+        invoice_id: inv.id,
+        invoice_number: inv.invoice_number,
+        amount: payment?.amount ? payment.amount / 100 : null,
+        details: `CRITICAL: Webhook order_id (${orderId}) does not match invoice tx_hash (${inv.tx_hash}). Possible spoofing attempt.`
+      });
+      return res.json({ status: 'ok', note: 'relationship_mismatch' });
     }
 
     // AMOUNT GUARD: verify Razorpay's captured amount (paise) matches the invoice
@@ -1651,11 +1839,6 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
         details: `Webhook amount ${(payment.amount / 100).toFixed(2)} != invoice ${inv.grand_total.toFixed(2)}. Invoice NOT marked paid.`
       });
       return res.json({ status: 'ok', note: 'amount_mismatch' });
-    }
-
-    // IDEMPOTENCY: skip if already paid with the same payment id
-    if (inv.status === 'paid' && inv.tx_hash === payment?.id) {
-      return res.json({ status: 'ok', note: 'already_processed' });
     }
 
     await query(
@@ -1681,7 +1864,6 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
   }
 
   if (event === 'payment.failed') {
-    // Never silently drop failures — the audit ledger records them too
     if (receipt) {
       const invRes = await query('SELECT id, user_id, invoice_number, grand_total FROM invoices WHERE invoice_number = $1', [receipt]);
       const inv = invRes.rows[0];
@@ -2004,11 +2186,11 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
               items: {
                 type: "object",
                 properties: {
-                  description: { type: "string", description: "Name of the product/service" },
-                  amount: { type: "number", description: "Unit price of the product/service" },
-                  quantity: { type: "number", description: "Quantity of this item" }
+                  sku: { type: "string", description: "The product SKU from the catalog" },
+                  quantity: { type: "number", description: "Quantity of this item" },
+                  negotiated_price: { type: "number", description: "The negotiated unit price for this product, if different from the list price. The server will reject it if below margin_floor." }
                 },
-                required: ["description", "amount", "quantity"]
+                required: ["sku", "quantity"]
               }
             },
             is_ai_upsell: { type: "boolean", description: "Set to true ONLY IF one or more items are being purchased because YOU suggested it via an upsell." }
@@ -2031,11 +2213,11 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
               items: {
                 type: "object",
                 properties: {
-                  description: { type: "string" },
-                  amount: { type: "number" },
-                  quantity: { type: "number" }
+                  sku: { type: "string", description: "The product SKU from the catalog" },
+                  quantity: { type: "number", description: "Quantity" },
+                  negotiated_price: { type: "number" }
                 },
-                required: ["description", "amount", "quantity"]
+                required: ["sku", "quantity"]
               }
             }
           },
@@ -2075,7 +2257,7 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
   }
 
   try {
-    const productsRes = await query('SELECT name, description, price, margin_floor FROM products');
+    const productsRes = await query('SELECT sku, name, description, price, margin_floor FROM products');
     const dynamicCatalog = productsRes.rows;
     const catalogContext = dynamicCatalog.length > 0
       ? `\n\nMERCHANT CATALOG (real products, real prices — only recommend items from this list):\n${JSON.stringify(dynamicCatalog, null, 2)}`
