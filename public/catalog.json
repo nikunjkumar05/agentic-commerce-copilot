@@ -1,5 +1,5 @@
 {
-  "merchant_name": "GovtInvoice Co-Pilot",
+  "merchant_name": "Agentic Commerce Co-Pilot",
   "merchant_type": "B2B IT Services & Licensing",
   "currency": "INR",
   "capabilities": ["autonomous_invoicing", "razorpay_settlement"],
@@ -8,26 +8,17 @@
     "direct_settle": "/api/agent/settle"
   },
   "catalog": [
-    {
-      "id": "prod_it_license",
-      "name": "Enterprise IT License",
-      "description": "Annual subscription for enterprise IT infrastructure management.",
-      "price": 5000,
-      "tax_rate": 18
-    },
-    {
-      "id": "prod_cloud_hosting",
-      "name": "Cloud Hosting",
-      "description": "Monthly dedicated server hosting with 99.9% uptime SLA.",
-      "price": 12000,
-      "tax_rate": 18
-    },
-    {
-      "id": "prod_network_sec",
-      "name": "Network Security Services",
-      "description": "Comprehensive firewall and zero-trust network implementation.",
-      "price": 8500,
-      "tax_rate": 18
-    }
+    { "id": "prod_it_license", "name": "Enterprise IT License", "description": "Annual subscription for enterprise IT infrastructure management.", "price": 5000, "tax_rate": 18, "machine_tags": ["software", "license", "annual"], "hsn_code": "998313" },
+    { "id": "prod_m365", "name": "Microsoft 365 Enterprise", "description": "Annual M365 E5 license for full productivity suite.", "price": 7500, "tax_rate": 18, "machine_tags": ["software", "license", "productivity"], "hsn_code": "998313" },
+    { "id": "prod_webex", "name": "Cisco Webex Suite", "description": "Enterprise video conferencing and collaboration.", "price": 6000, "tax_rate": 18, "machine_tags": ["software", "collaboration"], "hsn_code": "998313" },
+    { "id": "prod_cloud_hosting", "name": "Cloud Hosting", "description": "Monthly dedicated server hosting with 99.9% uptime SLA.", "price": 12000, "tax_rate": 18, "machine_tags": ["infrastructure", "cloud", "monthly"], "hsn_code": "998315" },
+    { "id": "prod_cdn", "name": "Global CDN Service", "description": "High-performance edge caching network.", "price": 4000, "tax_rate": 18, "machine_tags": ["infrastructure", "network", "performance"], "hsn_code": "998315" },
+    { "id": "prod_backup", "name": "Cloud Backup & DR", "description": "Automated disaster recovery and daily backups.", "price": 3500, "tax_rate": 18, "machine_tags": ["infrastructure", "storage", "dr"], "hsn_code": "998315" },
+    { "id": "prod_firewall", "name": "Network Firewall", "description": "Next-Gen Firewall with intrusion prevention.", "price": 8500, "tax_rate": 18, "machine_tags": ["security", "firewall", "hardware"], "hsn_code": "998314" },
+    { "id": "prod_zero_trust", "name": "Zero-Trust Architecture", "description": "Identity-based micro-segmentation deployment.", "price": 15000, "tax_rate": 18, "machine_tags": ["security", "zero-trust", "identity"], "hsn_code": "998314" },
+    { "id": "prod_soc", "name": "SOC as a Service", "description": "24/7 Managed Security Operations Center.", "price": 20000, "tax_rate": 18, "machine_tags": ["security", "managed-services", "monitoring"], "hsn_code": "998314" },
+    { "id": "prod_gst_filing", "name": "GST Filing Automation", "description": "Automated monthly GSTR-1 and GSTR-3B filing.", "price": 2000, "tax_rate": 18, "machine_tags": ["compliance", "finance", "automation"], "hsn_code": "998222" },
+    { "id": "prod_audit", "name": "Compliance Audit", "description": "Annual IT security and financial compliance audit.", "price": 9000, "tax_rate": 18, "machine_tags": ["compliance", "audit", "annual"], "hsn_code": "998222" },
+    { "id": "prod_esign", "name": "Enterprise e-Sign", "description": "Digital signature API for document workflows.", "price": 1500, "tax_rate": 18, "machine_tags": ["compliance", "api", "workflow"], "hsn_code": "998313" }
   ]
 }
