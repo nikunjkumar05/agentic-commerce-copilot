@@ -242,13 +242,18 @@ async function refundBudget(userId, amount) {
 
 /**
  * Closed-loop campaign attribution: when an invoice tied to a campaign moves
- * to a more-advanced state, increment the corresponding counter so the
- * campaign funnel stays truthful. Idempotent (the campaign.paid column only
- * gets +1 once per invoice via a guarded subquery).
+ * to a more-advanced state, increment the corresponding counter exactly once
+ * per invoice. The campaign_events PK (invoice_id, kind) is the idempotency
+ * key — replays, dual webhook events, and repeated PUTs are all noops.
  */
 async function bumpCampaignForInvoice(invoiceId, kind) {
   if (!invoiceId) return;
   try {
+    const claimed = await query(
+      `INSERT INTO campaign_events (invoice_id, kind) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING invoice_id`,
+      [invoiceId, kind]
+    );
+    if (claimed.rows.length === 0) return; // already counted for this invoice
     if (kind === 'accepted') {
       // Draft → validated: customer accepted the upsell offer
       await query(
@@ -470,8 +475,8 @@ app.post('/api/auth/register', async (req, res) => {
       [id, email, hashed, email.split('@')[0], userRole]
     );
 
-    // Generate secure 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Generate 6-digit OTP via CSPRNG (Math.random is predictable)
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const otpHashed = bcrypt.hashSync(otp, 10);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min expiry
 
@@ -486,8 +491,9 @@ app.post('/api/auth/register', async (req, res) => {
     res.json({
       success: true,
       message: 'Verification code sent to email',
-      // Include dev_otp in non-production for transparent testing and QA
-      ...(process.env.NODE_ENV !== 'production' ? { dev_otp: otp } : {})
+      // Explicit opt-in only: NODE_ENV is rarely "production" in demos, which
+      // used to leak OTPs in-band by default.
+      ...(process.env.ALLOW_DEV_OTP === '1' ? { dev_otp: otp } : {})
     });
   } catch (err) {
     console.error(err);
@@ -525,9 +531,18 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       return res.status(429).json({ error: 'too_many_attempts', message: 'Too many incorrect attempts. Please request a new code.' });
     }
 
+    // Atomic attempt gate: a single statement so parallel guesses cannot
+    // jointly overshoot the 5-try cap (read-then-increment would race).
+    const gate = await query(
+      'UPDATE user_otps SET attempts = attempts + 1 WHERE email = $1 AND attempts < 5 RETURNING attempts',
+      [email]
+    );
+    if (gate.rows.length === 0) {
+      return res.status(429).json({ error: 'too_many_attempts', message: 'Too many incorrect attempts. Please request a new code.' });
+    }
+
     const isValid = bcrypt.compareSync(otp, otp_hash);
     if (!isValid) {
-      await query('UPDATE user_otps SET attempts = attempts + 1 WHERE email = $1', [email]);
       return res.status(401).json({ error: 'invalid_otp', message: 'Invalid verification code' });
     }
 
@@ -551,16 +566,24 @@ app.post('/api/auth/resend-otp', async (req, res) => {
     const userRes = await query('SELECT id FROM users WHERE email = $1', [email]);
     if (userRes.rows.length === 0) return res.status(404).json({ error: 'user_not_found', message: 'User not found' });
 
-    // Rate-limit resend: require 30 seconds between requests
-    const lastOtp = await query('SELECT created_at FROM user_otps WHERE email = $1', [email]);
-    if (lastOtp.rows.length > 0) {
-      const elapsedMs = Date.now() - new Date(lastOtp.rows[0].created_at).getTime();
-      if (elapsedMs < 30000) {
-        return res.status(429).json({ error: 'rate_limited', message: 'Please wait 30 seconds before requesting another code.' });
-      }
+    // Rate-limit resend: require 30 seconds between requests. Enforced with a
+    // single atomic statement so concurrent resends cannot both slip through
+    // a read-then-write gap. The stamp refresh reserves the slot; the real OTP
+    // upsert below overwrites it (never touches the stored hash here).
+    const slot = await query(
+      `UPDATE user_otps SET created_at = NOW()
+       WHERE email = $1 AND created_at < NOW() - INTERVAL '30 seconds'
+       RETURNING email`,
+      [email]
+    );
+    // Row exists but was touched <30s ago → throttled (unless there is no row
+    // at all, which falls through to the insert below).
+    const rowExists = (await query('SELECT 1 FROM user_otps WHERE email = $1', [email])).rows.length > 0;
+    if (rowExists && slot.rows.length === 0) {
+      return res.status(429).json({ error: 'rate_limited', message: 'Please wait 30 seconds before requesting another code.' });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const otpHashed = bcrypt.hashSync(otp, 10);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -575,7 +598,7 @@ app.post('/api/auth/resend-otp', async (req, res) => {
     res.json({
       success: true,
       message: 'New verification code sent',
-      ...(process.env.NODE_ENV !== 'production' ? { dev_otp: otp } : {})
+      ...(process.env.ALLOW_DEV_OTP === '1' ? { dev_otp: otp } : {})
     });
   } catch (err) {
     console.error(err);
@@ -707,7 +730,16 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
   
   let complianceScore = data.compliance_score || null;
   const aiSuggestions = data.ai_suggestions || [];
-  let status = data.status || 'draft';
+  // Invoices may only be BORN as draft/validated/pending — `paid`/`processing`
+  // require Razorpay proof via /verify, webhooks, or mandate capture.
+  const requestedStatus = data.status || 'draft';
+  if (['paid', 'processing'].includes(requestedStatus)) {
+    return res.status(403).json({
+      error: 'manual_settlement_forbidden',
+      message: 'Invoices cannot be created with status paid/processing. Settle via Razorpay verification.',
+    });
+  }
+  let status = ['draft', 'validated', 'pending', 'anomaly', 'stored'].includes(requestedStatus) ? requestedStatus : 'draft';
 
   // --- Strict Server-Side Pricing & Margin Floor Guardrail ---
   const products = await query('SELECT sku, name, margin_floor, price, hsn_code FROM products');
@@ -734,6 +766,26 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
         });
       }
       item.unit_price = requestedPrice;
+    } else if (item.sku && AGENT_CATALOG?.catalog) {
+      // Static agent catalog fallback: the DB products table may not mirror
+      // every machine-readable SKU (e.g. manual fallback cart). Resolve
+      // name/price from the static catalog; floor = list price (no discount
+      // without a DB-stored floor — fail-safe), so the invoice still carries
+      // a real mandate-allowlisted SKU and stays autonomously settlable.
+      const staticProduct = AGENT_CATALOG.catalog.find(p => p.id === item.sku);
+      if (!staticProduct) {
+        return res.status(400).json({ error: 'invalid_sku', message: `Product SKU ${item.sku} not found.` });
+      }
+      item.description = staticProduct.name;
+      item.hsn_code = staticProduct.hsn_code;
+      const requestedPrice = item.negotiated_price ?? item.unit_price ?? item.price ?? staticProduct.price;
+      if (requestedPrice < staticProduct.price) {
+        return res.status(400).json({
+          error: 'margin_floor_violation',
+          message: `Price ₹${requestedPrice} for ${staticProduct.name} is below the list price of ₹${staticProduct.price} (no DB margin floor stored — discounting disabled).`
+        });
+      }
+      item.unit_price = requestedPrice;
     } else {
       // If we can't find it in the DB, it's an unrecognized SKU or custom item.
       // If it has a SKU, it's explicitly invalid.
@@ -746,6 +798,17 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
     item.quantity = Number(item.quantity ?? item.qty ?? 1);
     item.unit_price = Number(item.unit_price ?? item.price ?? item.rate ?? 0);
     item.tax_rate = Number(item.tax_rate ?? item.taxRate ?? 18);
+    // Reject non-finite money math at the door: negatives forge credit,
+    // NaN/Infinity mint ₹0 or infinite invoices downstream.
+    if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 1000) {
+      return res.status(400).json({ error: 'invalid_quantity', message: 'Each line item quantity must be an integer between 1 and 1000.' });
+    }
+    if (!Number.isFinite(item.unit_price) || item.unit_price < 0 || item.unit_price > 99999999.99) {
+      return res.status(400).json({ error: 'invalid_price', message: 'Each line item unit_price must be a finite non-negative number.' });
+    }
+    if (!Number.isFinite(item.tax_rate) || item.tax_rate < 0 || item.tax_rate > 100) {
+      return res.status(400).json({ error: 'invalid_tax_rate', message: 'Each line item tax_rate must be between 0 and 100.' });
+    }
     item.total = item.quantity * item.unit_price;
   }
 
@@ -780,9 +843,10 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
 });
 
 app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
-  const exists = await query('SELECT id FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [req.params.id, req.user.id]);
+  const exists = await query('SELECT id, status AS old_status FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [req.params.id, req.user.id]);
   if (exists.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const internalId = exists.rows[0].id;
+  const oldStatus = exists.rows[0].old_status;
   const data = req.body;
 
   // MONEY GATE: invoices may only reach `paid` via verified settlement paths
@@ -803,10 +867,13 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
   const params = [];
   let i = 1;
 
+  // NOTE: subtotal/tax_total/grand_total are NOT client-writable — they are
+  // always recomputed from line_items below. Otherwise an owner could reprice
+  // grand_total to ₹1 and settle a ₹17,700 invoice for a rupee.
   const ALLOWED_UPDATE_FIELDS = new Set([
     'invoice_number', 'institution_name', 'institution_address', 'gst_number',
     'recipient_name', 'recipient_address', 'recipient_gst', 'line_items',
-    'subtotal', 'tax_total', 'grand_total', 'currency', 'compliance_score',
+    'currency', 'compliance_score',
     'ai_suggestions', 'invoice_date', 'due_date', 'milestones', 'cid',
     'tx_hash', 'payment_method', 'status'
   ]);
@@ -842,19 +909,29 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
         item.quantity = Number(item.quantity ?? item.qty ?? 1);
         item.unit_price = Number(item.unit_price ?? item.price ?? item.rate ?? 0);
         item.tax_rate = Number(item.tax_rate ?? item.taxRate ?? 18);
+        if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 1000) {
+          return res.status(400).json({ error: 'invalid_quantity', message: 'Each line item quantity must be an integer between 1 and 1000.' });
+        }
+        if (!Number.isFinite(item.unit_price) || item.unit_price < 0 || item.unit_price > 99999999.99) {
+          return res.status(400).json({ error: 'invalid_price', message: 'Each line item unit_price must be a finite non-negative number.' });
+        }
+        if (!Number.isFinite(item.tax_rate) || item.tax_rate < 0 || item.tax_rate > 100) {
+          return res.status(400).json({ error: 'invalid_tax_rate', message: 'Each line item tax_rate must be between 0 and 100.' });
+        }
         item.total = item.quantity * item.unit_price;
       }
       
-      // Auto-recalculate totals
+      // Totals are ALWAYS recomputed server-side — client-sent subtotal/tax/
+      // grand_total are ignored entirely (see ALLOWED_UPDATE_FIELDS).
       const calcSubtotal = items.reduce((s, it) => s + it.total, 0);
       const calcTax = Math.round(items.reduce((s, it) => s + it.total * (it.tax_rate / 100), 0));
       const calcGrand = calcSubtotal + calcTax;
       
-      data.subtotal = calcSubtotal;
-      data.tax_total = calcTax;
-      data.grand_total = calcGrand;
-      
       processedValue = items;
+      // Append the recalculated totals alongside line_items (same statement).
+      sets.push(`subtotal = $${i}`); params.push(calcSubtotal); i++;
+      sets.push(`tax_total = $${i}`); params.push(calcTax); i++;
+      sets.push(`grand_total = $${i}`); params.push(calcGrand); i++;
     }
 
     if (['line_items', 'ai_suggestions', 'milestones'].includes(key)) {
@@ -886,21 +963,23 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
   const result = await query('SELECT * FROM invoices WHERE id = $1', [internalId]);
   const updated = result.rows[0];
 
-  // Closed-loop: draft → validated is a campaign "acceptance".
-  if (data.status === 'validated' && updated.status === 'validated') {
+  // Closed-loop campaign attribution on genuine TRANSITIONS only (bump itself
+  // is per-invoice idempotent, but transition checks keep no-op PUTs quiet).
+  if (oldStatus !== 'validated' && updated.status === 'validated') {
     await bumpCampaignForInvoice(internalId, 'accepted');
-  }
-  // Closed-loop: any → paid is a campaign "conversion".
-  if (data.status === 'paid' && updated.status === 'paid') {
-    await bumpCampaignForInvoice(internalId, 'paid');
   }
 
   res.json(parseInvoice(updated));
 });
 
 app.delete('/api/invoices/:id', authMiddleware, async (req, res) => {
-  const exists = await query('SELECT id FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [req.params.id, req.user.id]);
+  const exists = await query('SELECT id, status FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [req.params.id, req.user.id]);
   if (exists.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
+  // Financial evidence must not be deletable: paid/processing invoices are
+  // immutable (funnel joins and audit references would break silently).
+  if (['paid', 'processing'].includes(exists.rows[0].status)) {
+    return res.status(409).json({ error: 'immutable_invoice', message: `Invoice with status '${exists.rows[0].status}' cannot be deleted.` });
+  }
   await query('DELETE FROM invoices WHERE id = $1 AND user_id = $2', [exists.rows[0].id, req.user.id]);
   res.json({ success: true });
 });
@@ -951,6 +1030,23 @@ app.get('/api/audit-logs', authMiddleware, async (req, res) => {
 
 app.post('/api/audit-logs', authMiddleware, async (req, res) => {
   const data = req.body;
+  // FORGE GUARD: settlement/campaign/webhook/ops entries are server-minted.
+  // Clients may only write UI-originated actions — anything else would let a
+  // user fabricate "settlement_captured" rows that verify cleanly.
+  const CLIENT_WRITABLE_ACTIONS = new Set([
+    'upsell_suggested', 'manual_reconciliation_claimed', 'milestone_released',
+    'delegation_created', 'delegation_revoked',
+  ]);
+  if (!data || !CLIENT_WRITABLE_ACTIONS.has(data.action)) {
+    await appendAuditLog(req.user.id, {
+      action: 'settlement_blocked',
+      details: `Blocked client attempt to forge ledger action '${data?.action || 'UNKNOWN'}'.`,
+    }).catch(() => {});
+    return res.status(403).json({
+      error: 'ledger_action_forbidden',
+      message: `Ledger action '${data?.action || 'UNKNOWN'}' is server-minted and cannot be written by clients.`,
+    });
+  }
   const id = await appendAuditLog(req.user.id, data);
   const result = await query('SELECT * FROM audit_logs WHERE id = $1', [id]);
   res.status(201).json(result.rows[0]);
@@ -1039,7 +1135,7 @@ app.get('/api/audit-logs/verify', authMiddleware, async (req, res) => {
   res.json({ valid: true, entries_verified: verified, message: 'Cryptographic ledger is 100% mathematically valid.' });
 });
 
-import { createAgentSettlementOrder, captureAutonomousPayment, verifyWebhookSignature, verifySignature, isRazorpayConfigured, computeTaxSplit } from './razorpay.js';
+import { createAgentSettlementOrder, captureAutonomousPayment, verifyWebhookSignature, verifySignature, isRazorpayConfigured, computeTaxSplit, fetchPayment } from './razorpay.js';
 
 // --- Agent-to-Agent Commerce (x402 Protocol) ---
 // TWO DISTINCT IDENTITIES: the requesting user is the AI BUYER agent; the
@@ -1070,13 +1166,23 @@ function invoiceTaxSplit(invoice) {
 }
 
 app.post('/api/agent/b2b-buy', authMiddleware, agentBuyRateLimiter, async (req, res) => {
+  if (await getOpsFlag('settle_disabled')) {
+    return res.status(503).json({ error: 'settlement_halted', message: 'Machine checkout is halted by the ops kill-switch.' });
+  }
   const { product_id, quantity = 1 } = req.body;
+
+  // Quantity is money-adjacent: negatives forge credit, 0/huge values create
+  // dust or giant invoices before Razorpay ever sees them.
+  const qty = Number(quantity);
+  if (!Number.isInteger(qty) || qty < 1 || qty > 1000) {
+    return res.status(400).json({ error: 'invalid_quantity', message: 'quantity must be an integer between 1 and 1000.' });
+  }
 
   // 1. Validate Product — against the REAL machine-readable catalog
   const product = AGENT_CATALOG?.catalog?.find(p => p.id === product_id);
   if (!product) return res.status(404).json({ error: 'Product not found' });
 
-  const subtotal = product.price * quantity;
+  const subtotal = product.price * qty;
   const tax = (subtotal * (product.tax_rate || 18)) / 100;
   const grand_total = subtotal + tax;
 
@@ -1101,7 +1207,7 @@ app.post('/api/agent/b2b-buy', authMiddleware, agentBuyRateLimiter, async (req, 
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
   `, [
     invoiceId, merchant.id, req.user.id, invoiceNumber, `AI Buyer Agent (${req.user.email})`,
-    JSON.stringify([{ sku: product.id, description: product.name, quantity, price: product.price, total: subtotal }]),
+    JSON.stringify([{ sku: product.id, description: product.name, quantity: qty, price: product.price, total: subtotal }]),
     subtotal, tax, grand_total, 'INR', 'pending', null, new Date().toISOString()
   ]);
 
@@ -1132,16 +1238,24 @@ await query("UPDATE invoices SET tax_breakdown = $1 WHERE id = $2", [JSON.string
      });
 });
 
-// Standard human checkout (bypasses agent bounds/compliance checks)
-app.post('/api/checkout/order', authMiddleware, async (req, res) => {
+// Standard human checkout (bypasses agent budget gates — the human is the bound)
+app.post('/api/checkout/order', authMiddleware, agentBuyRateLimiter, async (req, res) => {
+  if (await getOpsFlag('settle_disabled')) {
+    return res.status(503).json({ error: 'settlement_halted', message: 'Checkout is halted by the ops kill-switch.' });
+  }
   const { invoice_id } = req.body;
   if (!invoice_id) return res.status(400).json({ error: 'bad_request', message: 'invoice_id is required' });
 
-  const invRes = await query('SELECT * FROM invoices WHERE id = $1', [invoice_id]);
+  // Ownership: nobody mints orders on, or clobbers the anchor of, another principal's invoice.
+  const invRes = await query('SELECT * FROM invoices WHERE id = $1 AND (user_id = $2 OR buyer_id = $2)', [invoice_id, req.user.id]);
   if (invRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invRes.rows[0];
 
   if (invoice.status === 'paid') return res.status(409).json({ error: 'already_paid', message: 'Invoice already paid' });
+  // Never overwrite an in-flight 402 anchor — that would orphan a live Razorpay order.
+  if (invoice.tx_hash && invoice.tx_hash.startsWith('order_') && invoice.status === 'processing') {
+    return res.status(409).json({ error: 'already_processing', message: 'Invoice has an in-flight payment. Complete or wait for it to release.' });
+  }
 
   try {
     const { order } = await createAgentSettlementOrder(invoice.grand_total, invoice.invoice_number, invoice.tax_total || 0, invoiceTaxSplit(invoice));
@@ -1165,10 +1279,13 @@ app.get('/api/agent/v1/catalog', authMiddleware, async (req, res) => {
   });
 });
 
-app.post('/api/agent/v1/quote', authMiddleware, async (req, res) => {
+app.post('/api/agent/v1/quote', authMiddleware, agentBuyRateLimiter, async (req, res) => {
+  if (await getOpsFlag('settle_disabled')) {
+    return res.status(503).json({ error: 'settlement_halted', message: 'Machine checkout is halted by the ops kill-switch.' });
+  }
   const { line_items } = req.body;
-  if (!Array.isArray(line_items) || line_items.length === 0) {
-    return res.status(400).json({ error: 'bad_request', message: 'line_items required' });
+  if (!Array.isArray(line_items) || line_items.length === 0 || line_items.length > 50) {
+    return res.status(400).json({ error: 'bad_request', message: 'line_items must be a non-empty array (max 50 items)' });
   }
 
   const productsRes = await query('SELECT sku, name, margin_floor, price, hsn_code FROM products');
@@ -1179,19 +1296,28 @@ app.post('/api/agent/v1/quote', authMiddleware, async (req, res) => {
   const processedItems = [];
 
   for (const item of line_items) {
-    if (!item.sku) return res.status(400).json({ error: 'invalid_item', message: 'sku required' });
+    if (!item.sku || typeof item.sku !== 'string') return res.status(400).json({ error: 'invalid_item', message: 'sku (string) required' });
     const dbProduct = products.find(p => p.sku === item.sku);
     if (!dbProduct) return res.status(400).json({ error: 'invalid_sku', message: `SKU ${item.sku} not found` });
 
-    const price = item.negotiated_price ?? dbProduct.price;
-    if (price < dbProduct.margin_floor) {
+    // negotiated_price must be a real non-negative number — a string here
+    // would slip past `<` ("abc" < floor is false) and mint a NaN/₹0 order.
+    const rawPrice = item.negotiated_price ?? dbProduct.price;
+    const price = Number(rawPrice);
+    if (!Number.isFinite(price) || price < 0) {
+      return res.status(400).json({ error: 'invalid_price', message: 'negotiated_price must be a finite non-negative number.' });
+    }
+    if (price < Number(dbProduct.margin_floor)) {
       return res.status(400).json({ 
         error: 'margin_floor_violation', 
         message: `Price ${price} below margin floor ${dbProduct.margin_floor} for ${dbProduct.name}`
       });
     }
 
-    const qty = Number(item.quantity || 1);
+    const qty = Number(item.quantity ?? 1);
+    if (!Number.isInteger(qty) || qty < 1 || qty > 1000) {
+      return res.status(400).json({ error: 'invalid_quantity', message: 'quantity must be an integer between 1 and 1000.' });
+    }
     const taxRate = 18; // Default GST
     const itemTotal = price * qty;
     const itemTax = Math.round(itemTotal * taxRate / 100);
@@ -1265,12 +1391,19 @@ async function handleSettleB2BPay(req, res) {
     return res.status(400).json({ error: 'bad_request', message: 'invoice_id and order_id (from the 402 challenge) are required.' });
   }
 
-  // Fetch buyer's mandate details
-  const userRes = await query('SELECT razorpay_customer_id, razorpay_token_id FROM users WHERE id = $1', [req.user.id]);
-  const { razorpay_customer_id, razorpay_token_id } = userRes.rows[0] || {};
+  // Fetch buyer's mandate details + delegation caps (the payer is the buyer agent)
+  const userRes = await query('SELECT razorpay_customer_id, razorpay_token_id, agent_delegation_max FROM users WHERE id = $1', [req.user.id]);
+  const { razorpay_customer_id, razorpay_token_id, agent_delegation_max } = userRes.rows[0] || {};
+  const delegation_max = Number(agent_delegation_max || 0);
 
-  // The challenge must match: invoice exists AND was anchored to THIS order
-  const invRes = await query('SELECT * FROM invoices WHERE id = $1 AND tx_hash = $2', [invoice_id, order_id]);
+  // The challenge must match: invoice exists AND was anchored to THIS order,
+  // AND the caller is a principal on it (buyer settling own challenge, or the
+  // merchant owning it). Order IDs leak in 402 headers — possession of the pair
+  // alone must not let a stranger spend their mandate on your invoice.
+  const invRes = await query(
+    'SELECT * FROM invoices WHERE id = $1 AND tx_hash = $2 AND (buyer_id = $3 OR user_id = $3)',
+    [invoice_id, order_id, req.user.id]
+  );
   if (invRes.rows.length === 0) {
     return res.status(404).json({ error: 'challenge_not_found', message: 'No matching 402 challenge for this invoice/order pair.' });
   }
@@ -1281,6 +1414,30 @@ async function handleSettleB2BPay(req, res) {
     return res.status(409).json({ error: 'already_settled', message: 'This challenge has already been paid.', payment_id: invoice.tx_hash });
   }
 
+  // BUDGET GATE: the buyer's own delegation bounds machine settlement too —
+  // without this, a bound mandate token could settle any challenge amount.
+  const budgetBlock = await enforceBudget(req.user.id, Number(invoice.grand_total), delegation_max);
+  if (budgetBlock) {
+    await appendAuditLog(req.user.id, {
+      ...budgetBlock.audit,
+      invoice_id: invoice.id,
+      invoice_number: invoice.invoice_number,
+    });
+    return res.status(budgetBlock.status).json(budgetBlock.body);
+  }
+
+  // Deterministic mandate (SKU allowlist) gate
+  const mandateBlock = await enforceMandate(invoice);
+  if (mandateBlock) {
+    await refundBudget(req.user.id, Number(invoice.grand_total));
+    await appendAuditLog(req.user.id, {
+      ...mandateBlock.audit,
+      invoice_id: invoice.id,
+      invoice_number: invoice.invoice_number,
+    });
+    return res.status(mandateBlock.status).json(mandateBlock.body);
+  }
+
   // ATOMIC CLAIM so two buyer agents cannot double-pay one challenge
   const claim = await query(
     `UPDATE invoices SET status = 'processing', updated_date = NOW()
@@ -1288,6 +1445,7 @@ async function handleSettleB2BPay(req, res) {
     [invoice.id]
   );
   if (claim.rows.length === 0) {
+    await refundBudget(req.user.id, Number(invoice.grand_total));
     return res.status(409).json({ error: 'already_processing', message: 'Challenge is being settled by another request.' });
   }
 
@@ -1342,8 +1500,10 @@ async function handleSettleB2BPay(req, res) {
       invoice_id
     });
   } catch (err) {
-    // Release the claim so the challenge stays retryable
+    // Release the claim so the challenge stays retryable, and refund the
+    // budget reservation (mirrors /api/agent/auto-settle error semantics)
     await query("UPDATE invoices SET status = 'pending', updated_date = NOW() WHERE id = $1 AND status = 'processing'", [invoice.id]);
+    await refundBudget(req.user.id, Number(invoice.grand_total));
     console.error('x402 payment error:', err);
     return res.status(500).json({ error: 'payment_error', message: err.message });
   }
@@ -1410,6 +1570,9 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
     [invoice_id, req.user.id]
   );
   if (claim.rows.length === 0) {
+    // Budget was already reserved above — refund it so a lost claim race
+    // doesn't burn the loser's daily autonomous spend.
+    await refundBudget(req.user.id, Number(invoice.grand_total));
     return res.status(409).json({
       error: 'already_settled',
       message: `Invoice ${invoice.invoice_number} is already settled or being processed by another request.`
@@ -1433,6 +1596,13 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
 
     res.json({ success: true, order, invoice_uuid: invoice.id });
   } catch (err) {
+    // Release the claim AND refund the reservation (mirrors auto-settle) so a
+    // Razorpay failure neither wedges the invoice at `processing` nor burns budget.
+    await query(
+      "UPDATE invoices SET status = 'pending', updated_date = NOW() WHERE id = $1 AND user_id = $2 AND status = 'processing'",
+      [invoice.id, req.user.id]
+    );
+    await refundBudget(req.user.id, Number(invoice.grand_total));
     console.error(err);
     res.status(500).json({ error: 'payment_error', message: 'Failed to create Razorpay Order' });
   }
@@ -1493,6 +1663,7 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
     [invoice_id, req.user.id]
   );
   if (claim.rows.length === 0) {
+    await refundBudget(req.user.id, Number(invoice.grand_total));
     return res.status(409).json({
       error: 'already_settled',
       message: `Invoice ${invoice.invoice_number} is already settled or being processed by another request.`,
@@ -1568,15 +1739,24 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
 // tokens — that is an explicit, separate, audited operation.
 app.post('/api/user/delegation', authMiddleware, async (req, res) => {
   const { maxAmount, dailyLimit } = req.body;
+  // Caps are money gates: negatives permanently self-DoS (amount > -1 always
+  // blocks), NaN disables nothing predictable, huge values overflow NUMERIC.
+  const maxN = Number(maxAmount), dailyN = dailyLimit != null ? Number(dailyLimit) : null;
+  if (!Number.isFinite(maxN) || maxN < 0 || maxN > 99999999.99) {
+    return res.status(400).json({ error: 'invalid_cap', message: 'maxAmount must be between 0 and 99,999,999.99.' });
+  }
+  if (dailyN !== null && (!Number.isFinite(dailyN) || dailyN < 0 || dailyN > 99999999.99)) {
+    return res.status(400).json({ error: 'invalid_cap', message: 'dailyLimit must be between 0 and 99,999,999.99.' });
+  }
   try {
     await query(
       "UPDATE users SET agent_delegation_max = $1, agent_daily_limit = COALESCE($2, agent_daily_limit) WHERE id = $3",
-      [Number(maxAmount) || 0, dailyLimit != null ? Number(dailyLimit) : null, req.user.id]
+      [maxN, dailyN, req.user.id]
     );
     await appendAuditLog(req.user.id, {
       action: 'delegation_updated',
-      amount: Number(maxAmount) || 0,
-      details: `Delegation cap updated to ₹${Number(maxAmount) || 0}${dailyLimit != null ? `, daily limit ₹${dailyLimit}` : ''}.`
+      amount: maxN,
+      details: `Delegation cap updated to ₹${maxN}${dailyN != null ? `, daily limit ₹${dailyN}` : ''}.`
     });
     res.json({ success: true });
   } catch (err) {
@@ -1672,6 +1852,19 @@ app.post('/api/ops/flags', authMiddleware, async (req, res) => {
   if (!['settle_disabled', 'llm_disabled'].includes(flag)) {
     return res.status(400).json({ error: 'bad_request', message: 'flag must be settle_disabled or llm_disabled' });
   }
+  // RBAC: halting settlement (or simulating an outage) is merchant-only — a
+  // foreign buyer must never be able to freeze the merchant's money movement.
+  // Releasing an LLM halt (enabled=false) stays open so a jailed buyer can
+  // recover from inside the chat via the Restore button.
+  const role = req.user?.role;
+  const isRelease = flag === 'llm_disabled' && !enabled;
+  if (!isRelease && role !== 'merchant' && role !== 'admin') {
+    await appendAuditLog(req.user.id, {
+      action: 'settlement_blocked',
+      details: `Blocked ops flag change by non-merchant role '${role || 'unknown'}': ${flag}=${Boolean(enabled)}.`,
+    }).catch(() => {});
+    return res.status(403).json({ error: 'forbidden', message: 'Ops kill-switches are merchant-only.' });
+  }
   await query(
     `INSERT INTO ops_flags (flag, enabled, updated_at) VALUES ($1, $2, NOW())
      ON CONFLICT (flag) DO UPDATE SET enabled = $2, updated_at = NOW()`,
@@ -1745,7 +1938,7 @@ app.get('/api/growth/funnel', authMiddleware, async (req, res) => {
   });
 });
 
-app.post('/api/agent/verify', authMiddleware, async (req, res) => {
+app.post('/api/agent/verify', authMiddleware, agentSettleRateLimiter, async (req, res) => {
   const { razorpay_order_id, razorpay_payment_id, razorpay_signature, invoice_id } = req.body;
 
   const isValid = verifySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature);
@@ -1759,6 +1952,29 @@ app.post('/api/agent/verify', authMiddleware, async (req, res) => {
   );
   if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invoiceRes.rows[0];
+
+  // Source-of-truth check: fetch the payment from Razorpay and require it to
+  // be captured, bound to this order, and for the full invoice amount. A valid
+  // HMAC alone proves nothing about amount — without this, a cheap payment's
+  // signature replays against any expensive invoice.
+  let payment;
+  try {
+    payment = await fetchPayment(razorpay_payment_id);
+  } catch (err) {
+    return res.status(400).json({ error: 'payment_not_found', message: 'Razorpay has no record of this payment.' });
+  }
+  if (payment.status !== 'captured') {
+    return res.status(400).json({ error: 'payment_not_captured', message: `Payment status is '${payment.status}', not captured.` });
+  }
+  if (payment.order_id !== razorpay_order_id) {
+    return res.status(400).json({ error: 'order_mismatch', message: 'Payment is not bound to this Razorpay order.' });
+  }
+  if (Math.abs(payment.amount - Math.round(Number(invoice.grand_total) * 100)) > 0) {
+    return res.status(400).json({
+      error: 'amount_mismatch',
+      message: `Payment of ₹${(payment.amount / 100).toFixed(2)} does not cover invoice total ₹${Number(invoice.grand_total).toFixed(2)}.`,
+    });
+  }
 
   // Verify that the order matches the invoice anchor if an order was anchored
   if (invoice.tx_hash && invoice.tx_hash.startsWith('order_') && invoice.tx_hash !== razorpay_order_id) {
@@ -1797,6 +2013,10 @@ app.post('/api/agent/verify', authMiddleware, async (req, res) => {
     details: 'Agent successfully verified and settled payment via Razorpay Checkout.'
   });
 
+  // Closed-loop: campaign invoices verified here count as conversions too
+  // (previously only webhook-paid invoices bumped the funnel).
+  await bumpCampaignForInvoice(invoice_id, 'paid');
+
   res.json({ success: true, message: 'Payment verified successfully' });
 });
 
@@ -1808,10 +2028,24 @@ app.get('/api/campaigns', authMiddleware, async (req, res) => {
 
 app.post('/api/campaigns', authMiddleware, async (req, res) => {
   const { name, upsell_product_id, target_status, budget_cap } = req.body;
+  if (!name || typeof name !== 'string' || name.length > 200) {
+    return res.status(400).json({ error: 'invalid_name', message: 'Campaign name (max 200 chars) is required.' });
+  }
+  // Validate upsell targets against the catalog NOW — otherwise launch silently
+  // yields 0 drafts (id-vs-sku key confusion) yet still marks `launched`.
+  const ids = String(upsell_product_id || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (ids.length === 0) {
+    return res.status(400).json({ error: 'invalid_product', message: 'upsell_product_id (comma-separated product id or sku) is required.' });
+  }
+  const prodRes = await query('SELECT id, sku FROM products WHERE user_id = $1', [req.user.id]);
+  const unknown = ids.filter(id => !prodRes.rows.some(p => p.id === id || p.sku === id));
+  if (unknown.length > 0) {
+    return res.status(400).json({ error: 'invalid_product', message: `Unknown product(s): ${unknown.join(', ')}` });
+  }
   const id = uuidv4();
   await query(
     'INSERT INTO campaigns (id, user_id, name, target_status, upsell_product_id, budget_cap) VALUES ($1, $2, $3, $4, $5, $6)',
-    [id, req.user.id, name, target_status || 'validated', upsell_product_id, budget_cap || 0]
+    [id, req.user.id, name, target_status || 'validated', ids.join(','), Number(budget_cap) || 0]
   );
   res.json({ id });
 });
@@ -1835,17 +2069,19 @@ app.post('/api/campaigns/:id/launch', authMiddleware, async (req, res) => {
   if (campRes.rows.length === 0) return res.status(404).json({ error: 'not_found' });
   const campaign = campRes.rows[0];
 
-  const statuses = campaign.target_status.split(',');
+  const statuses = campaign.target_status.split(',').map(s => s.trim()).filter(Boolean);
   const targetRes = await query('SELECT * FROM invoices WHERE user_id = $1 AND status = ANY($2) LIMIT 20', [req.user.id, statuses]);
   const targets = targetRes.rows;
 
-  const productsRes = await query('SELECT * FROM products');
+  const productsRes = await query('SELECT * FROM products WHERE user_id = $1', [req.user.id]);
   const catalog = productsRes.rows;
 
   let created = 0;
   for (const inv of targets) {
-    const productIds = campaign.upsell_product_id.split(',');
-    const itemsToUpsell = productIds.map(id => catalog.find(p => p.id === id)).filter(Boolean);
+    const productIds = campaign.upsell_product_id.split(',').map(s => s.trim()).filter(Boolean);
+    // Match on EITHER key (id or sku) — creation validates both, but legacy
+    // campaigns may store either form.
+    const itemsToUpsell = productIds.map(id => catalog.find(p => p.id === id || p.sku === id)).filter(Boolean);
     if (itemsToUpsell.length === 0) continue;
     
     // Create new invoice for the upsell
@@ -1855,12 +2091,12 @@ app.post('/api/campaigns/:id/launch', authMiddleware, async (req, res) => {
     let subtotal = 0;
     let tax_total = 0;
     const items = itemsToUpsell.map(item => {
-      const amount = item.price;
-      const taxRate = item.tax_rate || 18;
+      const amount = Number(item.price);
+      const taxRate = Number(item.tax_rate) || 18;
       const tax = Math.round(amount * (taxRate / 100));
       subtotal += amount;
       tax_total += tax;
-      return { description: item.name, quantity: 1, unit_price: amount, tax_rate: taxRate, total: amount };
+      return { sku: item.sku || item.id, description: item.name, quantity: 1, unit_price: amount, tax_rate: taxRate, total: amount, hsn_code: item.hsn_code || null };
     });
     const grand_total = subtotal + tax_total;
     
@@ -1887,7 +2123,9 @@ app.post('/api/campaigns/:id/launch', authMiddleware, async (req, res) => {
     created++;
   }
 
-  await query("UPDATE campaigns SET status = 'launched', sent = $1 WHERE id = $2", [created, campaign.id]);
+  // Flight semantics: each launch starts fresh counters (accepted/paid from a
+  // previous flight would otherwise make rates exceed 1 after revoke relaunches).
+  await query("UPDATE campaigns SET status = 'launched', sent = $1, accepted = 0, paid = 0 WHERE id = $2", [created, campaign.id]);
   await appendAuditLog(req.user.id, {
     action: 'campaign_launched',
     details: `Launched campaign '${campaign.name}' to ${created} targets.`
@@ -1938,9 +2176,13 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
   const receipt = payment?.notes?.receipt || order?.receipt;
   const orderId = payment?.order_id || order?.id;
   
-  // Razorpay may or may not send x-razorpay-event-id. 
-  // Fall back to deriving it from payload to ensure production webhook idempotency.
-  const webhookEventId = req.headers['x-razorpay-event-id'] || crypto.createHash('sha256').update(`${req.body.event}_${req.body.created_at}_${payment?.id || orderId || 'no_id'}`).digest('hex');
+  // Razorpay may or may not send x-razorpay-event-id.
+  // Idempotency is keyed on the PAYMENT when one is present: Razorpay emits
+  // both payment.captured and order.paid for a single payment, and both must
+  // collapse to one processing. Event-name-only keys would double-settle.
+  const webhookEventId = req.headers['x-razorpay-event-id']
+    || (payment?.id ? `pay_${payment.id}` : null)
+    || crypto.createHash('sha256').update(`${req.body.event}_${req.body.created_at}_${orderId || 'no_id'}`).digest('hex');
 
   // IDEMPOTENCY: Check processed_webhook_events table
   try {
@@ -1958,9 +2200,10 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
   }
 
   if (event === 'payment.captured' || event === 'order.paid') {
-    // Locate the invoice strictly by order_id (which is anchored into tx_hash) OR by receipt
+    // Locate the invoice strictly by order_id (which is anchored into tx_hash) OR by receipt.
+    // Deterministic order: without ORDER BY, invoice_number collisions could settle the wrong row.
     const invRes = await query(
-      'SELECT id, user_id, invoice_number, grand_total, status, tx_hash FROM invoices WHERE invoice_number = $1 OR tx_hash = $2',
+      'SELECT id, user_id, invoice_number, grand_total, status, tx_hash FROM invoices WHERE invoice_number = $1 OR tx_hash = $2 ORDER BY created_date DESC LIMIT 1',
       [receipt, orderId]
     );
     const inv = invRes.rows[0];
@@ -1968,6 +2211,13 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
     if (!inv) {
       console.warn(`[WEBHOOK] ${event}: no invoice matches receipt='${receipt}' order='${orderId}'`);
       return res.json({ status: 'ok', note: 'invoice_not_found' });
+    }
+
+    // IDEMPOTENT NOOP: already paid invoices are never re-written — a replay
+    // with a different payment.id must not overwrite the settled proof or
+    // double-bump the campaign funnel.
+    if (inv.status === 'paid') {
+      return res.json({ status: 'ok', note: 'already_paid' });
     }
 
     // RELATIONSHIP BINDING GUARD: Ensure the webhook's orderId actually matches the orderId we generated (stored in tx_hash if not yet paid)
@@ -1982,14 +2232,28 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
       return res.json({ status: 'ok', note: 'relationship_mismatch' });
     }
 
-    // AMOUNT GUARD: verify Razorpay's captured amount (paise) matches the invoice
-    if (payment?.amount && Math.abs(payment.amount - Math.round(inv.grand_total * 100)) > 0) {
+    // AMOUNT GUARD: verify Razorpay's captured amount (paise) matches the invoice.
+    // Tolerance is exactly ₹1 (100 paise): CGST/SGST half-split rounding can
+    // legitimately drift by a rupee between order notes and stored totals.
+    // Anything larger is a mismatch and the invoice is NOT marked paid.
+    const PAISA_TOLERANCE = 100;
+    if (!payment?.amount) {
+      await appendAuditLog(inv.user_id, {
+        action: 'webhook_amount_mismatch',
+        invoice_id: inv.id,
+        invoice_number: inv.invoice_number,
+        amount: null,
+        details: `Webhook '${event}' carried no payment amount. Invoice NOT marked paid.`
+      });
+      return res.json({ status: 'ok', note: 'amount_missing' });
+    }
+    if (Math.abs(payment.amount - Math.round(Number(inv.grand_total) * 100)) > PAISA_TOLERANCE) {
       await appendAuditLog(inv.user_id, {
         action: 'webhook_amount_mismatch',
         invoice_id: inv.id,
         invoice_number: inv.invoice_number,
         amount: payment.amount / 100,
-        details: `Webhook amount ${(payment.amount / 100).toFixed(2)} != invoice ${inv.grand_total.toFixed(2)}. Invoice NOT marked paid.`
+        details: `Webhook amount ${(payment.amount / 100).toFixed(2)} != invoice ${Number(inv.grand_total).toFixed(2)} (tolerance ₹1). Invoice NOT marked paid.`
       });
       return res.json({ status: 'ok', note: 'amount_mismatch' });
     }
@@ -2162,14 +2426,27 @@ app.get('/api/catalog', async (req, res) => {
 });
 
 app.post('/api/catalog', authMiddleware, async (req, res) => {
-  const { name, description, price, margin_floor } = req.body;
+  const { name, description, price, margin_floor, sku, hsn_code } = req.body;
+  // Catalog rows feed the margin-floor gate: NaN/negative floors disable it
+  // (price < NULL is falsy), and missing SKUs make products unquotable.
+  if (!name || typeof name !== 'string' || name.length > 200) {
+    return res.status(400).json({ error: 'invalid_name', message: 'Product name (max 200 chars) is required.' });
+  }
+  const priceN = Number(price), floorN = Number(margin_floor);
+  if (!Number.isFinite(priceN) || priceN < 0 || priceN > 99999999.99) {
+    return res.status(400).json({ error: 'invalid_price', message: 'price must be a finite non-negative number.' });
+  }
+  if (!Number.isFinite(floorN) || floorN < 0 || floorN > priceN) {
+    return res.status(400).json({ error: 'invalid_margin_floor', message: 'margin_floor must be between 0 and price.' });
+  }
+  const skuV = (sku && String(sku)) || ('sku_' + crypto.randomUUID().slice(0, 8));
   const id = crypto.randomUUID();
   try {
     await query(
-      'INSERT INTO products (id, user_id, name, description, price, margin_floor) VALUES ($1, $2, $3, $4, $5, $6)',
-      [id, req.user.id, name, description, Number(price), Number(margin_floor)]
+      'INSERT INTO products (id, user_id, sku, name, description, price, margin_floor, hsn_code) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [id, req.user.id, skuV, name, description || null, priceN, floorN, hsn_code || null]
     );
-    res.json({ success: true, id });
+    res.json({ success: true, id, sku: skuV });
   } catch (err) {
     res.status(500).json({ error: 'catalog_error', message: err.message });
   }
@@ -2215,19 +2492,23 @@ app.delete('/api/chat/sessions/:id', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/chat/sync', async (req, res) => {
-  // Syncing chat is usually unauthenticated for the buyer (since they use the chat portal)
-  // For the demo we tie it to a static session ID or create one
+app.post('/api/chat/sync', authMiddleware, async (req, res) => {
+  // Authenticated + strictly scoped: a session belongs to exactly one user.
+  // Previously any unauthenticated caller could overwrite any session_id and
+  // the orphan rows were attributed to merchant #1.
   const { session_id, messages, buyer_name } = req.body;
+  if (!session_id || typeof session_id !== 'string' || session_id.length > 128) {
+    return res.status(400).json({ error: 'bad_request', message: 'valid session_id is required' });
+  }
+  if (!Array.isArray(messages) || messages.length > 500) {
+    return res.status(400).json({ error: 'bad_request', message: 'messages must be an array (max 500 turns)' });
+  }
   try {
-    const existing = await query('SELECT id FROM chat_sessions WHERE id = $1', [session_id]);
+    const existing = await query('SELECT id FROM chat_sessions WHERE id = $1 AND user_id = $2', [session_id, req.user.id]);
     if (existing.rows.length > 0) {
-      await query('UPDATE chat_sessions SET messages = $1, buyer_name = $2, updated_at = NOW() WHERE id = $3', [JSON.stringify(messages), buyer_name, session_id]);
+      await query('UPDATE chat_sessions SET messages = $1, buyer_name = $2, updated_at = NOW() WHERE id = $3 AND user_id = $4', [JSON.stringify(messages), buyer_name || null, session_id, req.user.id]);
     } else {
-      // Default to the first merchant user ID for demo purposes
-      const userRes = await query('SELECT id FROM users LIMIT 1');
-      const userId = userRes.rows[0]?.id || 'demo-user';
-      await query('INSERT INTO chat_sessions (id, user_id, buyer_name, messages) VALUES ($1, $2, $3, $4)', [session_id, userId, buyer_name, JSON.stringify(messages)]);
+      await query('INSERT INTO chat_sessions (id, user_id, buyer_name, messages) VALUES ($1, $2, $3, $4)', [session_id, req.user.id, buyer_name || null, JSON.stringify(messages)]);
     }
     res.json({ success: true });
   } catch (err) {
@@ -2298,9 +2579,10 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
   if (await getOpsFlag('llm_disabled')) {
     return res.status(503).json({
       error: 'agent_ai_disabled',
-      message: 'The autonomous agent is halted by the ops kill-switch (llm_disabled). Manual catalog ordering is enabled.',
+      message: 'The autonomous agent is halted by the ops kill-switch (llm_disabled). Manual catalog ordering is enabled below — or restore autonomous mode from the Manual Checkout panel.',
       demo_mode: true,
       fallback_mode: true,
+      simulated: true,
       catalog: AGENT_CATALOG.catalog,
       bundles: AGENT_CATALOG.bundles,
     });

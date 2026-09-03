@@ -28,14 +28,18 @@ export default function AgentChat() {
   const [isTyping, setIsTyping] = useState(false);
 const [fallbackMode, setFallbackMode] = useState(false);
   const [fallbackCatalog, setFallbackCatalog] = useState([]);
+  const [fallbackSimulated, setFallbackSimulated] = useState(false);
   const [fallbackCart, setFallbackCart] = useState([]);
   const [fallbackQuery, setFallbackQuery] = useState('');
 
   // --- Phase 3: Resilient Fallback Cart (LLM down => manual checkout keeps the sale) ---
+  // Cart items carry `sku` (static catalog id or DB sku) so invoices created here
+  // resolve against the mandate allowlist and stay autonomously settlable.
   const fallbackAdd = (p) => setFallbackCart(prev => {
-    const found = prev.find(i => i.id === p.id);
-    if (found) return prev.map(i => i.id === p.id ? { ...i, quantity: i.quantity + 1 } : i);
-    return [...prev, { id: p.id, name: p.name, price: Number(p.price), quantity: 1 }];
+    const key = p.sku ?? p.id;
+    const found = prev.find(i => (i.sku ?? i.id) === key);
+    if (found) return prev.map(i => (i.sku ?? i.id) === key ? { ...i, quantity: i.quantity + 1 } : i);
+    return [...prev, { id: p.id ?? p.sku, sku: p.sku ?? p.id, name: p.name, price: Number(p.price), quantity: 1 }];
   });
   const fallbackRemove = (id) => setFallbackCart(prev => prev.filter(i => i.id !== id));
   const fallbackQty = (id, delta) => setFallbackCart(prev =>
@@ -93,6 +97,27 @@ const [fallbackMode, setFallbackMode] = useState(false);
   const [lastInvoiceId, setLastInvoiceId] = useState(() => localStorage.getItem('agent_last_invoice_id') || null); 
   const chatEndRef = useRef(null);
 
+  // Release a simulated LLM outage from inside the chat (merchant/jailed-buyer
+  // recovery without navigating to the Audit Trail). Real outages (no API key)
+  // have no flag to release, so the button only shows for simulated ones.
+  const restoreAutonomousMode = async () => {
+    try {
+      const token = localStorage.getItem('app_access_token');
+      const res = await fetch('/api/ops/flags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
+        body: JSON.stringify({ flag: 'llm_disabled', enabled: false })
+      });
+      if (!res.ok) throw new Error('Restore rejected');
+      setFallbackMode(false);
+      setFallbackSimulated(false);
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Autonomous mode restored — the agent LLM is back. Ask me anything.' }]);
+      toast.success('Autonomous mode restored');
+    } catch (e) {
+      toast.error(e.message || 'Could not restore autonomous mode');
+    }
+  };
+
   // 2. Save to LocalStorage whenever messages change
   useEffect(() => {
     localStorage.setItem('agent_chat_history', JSON.stringify(messages));
@@ -112,7 +137,10 @@ const [fallbackMode, setFallbackMode] = useState(false);
 
     fetch('/api/chat/sync', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(localStorage.getItem('app_access_token') && { Authorization: `Bearer ${localStorage.getItem('app_access_token')}` })
+      },
       body: JSON.stringify({ session_id: sessionId, messages, buyer_name: buyerName })
     }).catch(e => console.error('Failed to sync chat:', e));
     
@@ -186,10 +214,16 @@ const [fallbackMode, setFallbackMode] = useState(false);
         if (body && body.fallback_mode) {
           setFallbackMode(true);
           setFallbackCatalog(body.catalog || []);
-          setMessages(prev => [...prev, {
-            role: 'assistant',
-            content: body.message || 'The agent LLM is unavailable. Manual catalog ordering is enabled below — pick products and pay to keep the sale moving.',
-          }]);
+          setFallbackSimulated(Boolean(body.simulated));
+          // Don't spam a notice on every message while halted — one is enough.
+          setMessages(prev => {
+            if (prev.length > 0 && prev[prev.length - 1].fallbackNotice) return prev;
+            return [...prev, {
+              role: 'assistant',
+              fallbackNotice: true,
+              content: body.message || 'The agent LLM is unavailable. Manual catalog ordering is enabled below — pick products and pay to keep the sale moving.',
+            }];
+          });
           return;
         }
         // FAIL LOUD: surface the reason for a non-fallback error.
@@ -199,6 +233,10 @@ const [fallbackMode, setFallbackMode] = useState(false);
       }
 
       const data = body;
+
+      // LLM recovered (or kill-switch released elsewhere) — hide fallback cart.
+      setFallbackMode(false);
+      setFallbackSimulated(false);
       
       // Crucial: Append the assistant's tool_call request to history so the next turn validates
       if (data.tool_calls || data.content) {
@@ -873,6 +911,11 @@ const [fallbackMode, setFallbackMode] = useState(false);
               <div className="flex items-center gap-2">
                 <Package className="w-5 h-5 text-primary" />
                 <h3 className="font-bold text-sm">Manual Checkout — Agent LLM offline</h3>
+                {fallbackSimulated && (
+                  <Button size="sm" variant="default" className="h-7 text-xs ml-auto" onClick={restoreAutonomousMode}>
+                    Restore autonomous mode
+                  </Button>
+                )}
               </div>
               <Input value={fallbackQuery} onChange={e => setFallbackQuery(e.target.value)} placeholder="Search catalog (e.g., firewall, compliance)..." className="h-10 bg-background" />
               <div className="flex gap-2 overflow-x-auto pb-2">

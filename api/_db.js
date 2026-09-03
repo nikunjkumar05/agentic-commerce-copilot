@@ -251,6 +251,15 @@ export async function initDb() {
       processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
 
+    -- Campaign funnel idempotency keys: one row per (invoice, accepted|paid).
+    -- bumpCampaignForInvoice inserts here first; replays are ON CONFLICT noops.
+    CREATE TABLE IF NOT EXISTS campaign_events (
+      invoice_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      PRIMARY KEY (invoice_id, kind)
+    );
+
     -- Ops kill-switches for Failure Theater demos (judge-visible graceful degradation).
     -- Single-row-per-flag table; enforced by API before any money moves.
     CREATE TABLE IF NOT EXISTS ops_flags (

@@ -95,6 +95,11 @@ export function computeTaxSplit({ subtotal, rate, sellerGstin, buyerGstin }) {
  */
 export async function createAgentSettlementOrder(amount, receipt, taxAmount = 0, taxSplit = null) {
   requireRazorpayConfig();
+  // NUMERIC columns arrive from Postgres as strings ("9440.00") — coerce once
+  // here so every money method below (.toFixed, Razorpay paise math) is safe
+  // no matter which caller path (settle, auto-settle, b2b, checkout) we came from.
+  amount = Number(amount) || 0;
+  taxAmount = Number(taxAmount) || 0;
   const totalPaise = Math.round(amount * 100);
   const taxPaise = Math.round(taxAmount * 100);
   const linkedAccountId = process.env.RAZORPAY_LINKED_ACCOUNT_ID;
@@ -247,6 +252,15 @@ async function s2sRequest(path, payload) {
     throw err;
   }
   return body;
+}
+
+/**
+ * Fetches a single payment from Razorpay — used by /verify to confirm amount
+ * and capture status from the source of truth instead of trusting the client.
+ */
+export async function fetchPayment(paymentId) {
+  requireRazorpayConfig();
+  return getInstance().payments.fetch(paymentId);
 }
 
 /**
