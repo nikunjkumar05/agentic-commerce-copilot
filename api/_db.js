@@ -1,14 +1,54 @@
-import { Pool } from '@neondatabase/serverless';
+import { Pool, neonConfig } from '@neondatabase/serverless';
+import ws from 'ws';
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// Neon Serverless WebSocket disconnect handler
+neonConfig.webSocketConstructor = class SilentWebSocket extends ws {
+  constructor(...args) {
+    super(...args);
+    // Attach error listener directly on WebSocket instance to prevent ErrorEvent leaking to process
+    this.on('error', () => {});
+  }
+};
 
-export async function query(text, params) {
-  const client = await pool.connect();
+function sanitizeConnectionString(url) {
+  if (!url) return url;
   try {
-    const result = await client.query(text, params);
-    return result;
-  } finally {
-    client.release();
+    const u = new URL(url);
+    // channel_binding=require breaks ws in Node (ETIMEDOUT on -pooler). Neon docs: remove it for serverless ws.
+    if (u.searchParams.has('channel_binding')) u.searchParams.delete('channel_binding');
+    return u.toString();
+  } catch { return url; }
+}
+
+const pool = new Pool({ connectionString: sanitizeConnectionString(process.env.DATABASE_URL) });
+
+pool.on('error', () => {
+  // Swallowed: Pool will automatically reconnect on next query
+});
+
+/**
+ * Run a query against Neon, retrying once on a stale-connection error
+ * (Neon closes idle WebSockets — the pool will hand out a dead client).
+ * The wrapper makes transient network issues a one-request failure
+ * instead of an unhandled exception that kills the process.
+ */
+export async function query(text, params) {
+  let attempt = 0;
+  while (true) {
+    const client = await pool.connect();
+    try {
+      return await client.query(text, params);
+    } catch (err) {
+      // Stale / closed connection — release and retry once with a fresh one
+      if (attempt === 0 && /Connection terminated|closed|ECONNRESET|socket hang up/i.test(err.message)) {
+        attempt++;
+        try { client.release(true); } catch { /* ignore */ }
+        continue;
+      }
+      throw err;
+    } finally {
+      try { client.release(); } catch { /* connection already gone */ }
+    }
   }
 }
 
@@ -21,9 +61,19 @@ export async function initDb() {
       name TEXT,
       role TEXT DEFAULT 'user',
       is_verified INTEGER DEFAULT 0,
+      agent_delegation_max REAL DEFAULT 0,
+      agent_daily_limit REAL DEFAULT 50000,
+      agent_daily_spent REAL DEFAULT 0,
+      daily_reset_date TEXT,
+      razorpay_customer_id TEXT,
+      razorpay_token_id TEXT,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     );
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS agent_daily_limit REAL DEFAULT 50000;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS agent_daily_spent REAL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_reset_date TEXT;
 
     CREATE TABLE IF NOT EXISTS invoices (
       id TEXT PRIMARY KEY,
@@ -46,6 +96,8 @@ export async function initDb() {
       payment_method TEXT,
       compliance_score REAL,
       ai_suggestions JSONB DEFAULT '[]',
+      is_ai_upsell BOOLEAN DEFAULT FALSE,
+      campaign_id TEXT,
       invoice_date TEXT,
       due_date TEXT,
       milestones JSONB DEFAULT '[]',
@@ -73,6 +125,44 @@ export async function initDb() {
       created_at TIMESTAMP DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS campaigns (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      template TEXT,
+      target_status TEXT,
+      upsell_product_id TEXT NOT NULL,
+      budget_cap REAL DEFAULT 0,
+      sent INTEGER DEFAULT 0,
+      accepted INTEGER DEFAULT 0,
+      paid INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'draft',
+      created_date TIMESTAMP DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS products (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      price REAL NOT NULL,
+      margin_floor REAL NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      buyer_name TEXT,
+      messages JSONB DEFAULT '[]',
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+
+    -- Ensure campaign_id exists
+    ALTER TABLE invoices ADD COLUMN IF NOT EXISTS campaign_id TEXT;
+
     DO $$ 
     BEGIN 
       BEGIN
@@ -87,6 +177,21 @@ export async function initDb() {
       END;
       BEGIN
         ALTER TABLE users ADD COLUMN agent_delegation_max REAL DEFAULT 0;
+      EXCEPTION
+        WHEN duplicate_column THEN null;
+      END;
+      BEGIN
+        ALTER TABLE invoices ADD COLUMN is_ai_upsell BOOLEAN DEFAULT FALSE;
+      EXCEPTION
+        WHEN duplicate_column THEN null;
+      END;
+      BEGIN
+        ALTER TABLE users ADD COLUMN max_discount_pct REAL DEFAULT 10;
+      EXCEPTION
+        WHEN duplicate_column THEN null;
+      END;
+BEGIN
+        ALTER TABLE invoices ADD COLUMN tax_breakdown TEXT;
       EXCEPTION
         WHEN duplicate_column THEN null;
       END;

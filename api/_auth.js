@@ -1,6 +1,10 @@
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
+// If JWT_SECRET is not configured, use a random ephemeral secret so tokens
+// are at least unpredictable for this process lifetime (and warn loudly).
+const JWT_SECRET = process.env.JWT_SECRET
+  || (console.warn('[SECURITY] JWT_SECRET not set — using an ephemeral random secret. Tokens will be invalidated on restart.'), crypto.randomBytes(32).toString('hex'));
 
 export function generateToken(user) {
   return jwt.sign(

@@ -36,6 +36,7 @@ export const db = {
         return fetchApi('/invoices');
       },
       list: async (sort, limit) => fetchApi(`/invoices?sort=${encodeURIComponent(sort)}&limit=${limit}`),
+      read: async (id) => fetchApi(`/invoices/${id}`),
       create: async (data) => fetchApi('/invoices', { method: 'POST', body: JSON.stringify(data) }),
       update: async (id, data) => fetchApi(`/invoices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
       delete: async (id) => fetchApi(`/invoices/${id}`, { method: 'DELETE' })
@@ -51,10 +52,10 @@ export const db = {
     me: async () => {
       return fetchApi('/auth/me');
     },
-    loginViaEmailPassword: async (email, password) => {
+    loginViaEmailPassword: async (email, password, role) => {
       const data = await fetchApi('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email, password, role })
       });
       if (data.access_token) localStorage.setItem('app_access_token', data.access_token);
       return data;
@@ -62,10 +63,10 @@ export const db = {
     loginWithProvider: (provider, redirectUrl) => {
       console.warn("OAuth providers not supported in hackathon backend");
     },
-    register: async ({ email, password }) => {
+    register: async ({ email, password, role }) => {
       return fetchApi('/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email, password, role })
       });
     },
     verifyOtp: async ({ email }) => {
