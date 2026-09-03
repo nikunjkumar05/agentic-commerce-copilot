@@ -52,6 +52,21 @@ export async function query(text, params) {
   }
 }
 
+export async function withTransaction(callback) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await callback(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw err;
+  } finally {
+    try { client.release(); } catch {}
+  }
+}
+
 export async function initDb() {
   await query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -160,8 +175,17 @@ export async function initDb() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
 
-    -- Ensure campaign_id exists
+    CREATE TABLE IF NOT EXISTS user_otps (
+      email TEXT PRIMARY KEY,
+      otp_hash TEXT NOT NULL,
+      attempts INTEGER DEFAULT 0,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+
+    -- Ensure campaign_id and buyer_id exist on invoices
     ALTER TABLE invoices ADD COLUMN IF NOT EXISTS campaign_id TEXT;
+    ALTER TABLE invoices ADD COLUMN IF NOT EXISTS buyer_id TEXT;
 
     DO $$ 
     BEGIN 

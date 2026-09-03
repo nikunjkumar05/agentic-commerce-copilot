@@ -4,7 +4,7 @@ import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
-import { query, initDb } from './_db.js';
+import { query, initDb, withTransaction } from './_db.js';
 import { generateToken, authMiddleware } from './_auth.js';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
@@ -15,38 +15,42 @@ const app = express();
 
 export async function appendAuditLog(userId, data) {
   const id = uuidv4();
-  
-  // 1. Get previous hash for the chain
-  const lastLog = await query(
-    'SELECT hash FROM audit_logs WHERE user_id = $1 ORDER BY created_date DESC LIMIT 1',
-    [userId]
-  );
-  const prev_hash = lastLog.rows.length > 0 && lastLog.rows[0].hash ? lastLog.rows[0].hash : '0'.repeat(64);
-  
-  // 2. Compute SHA-256 of payload + prev_hash
-  const timestamp = data.created_date || new Date().toISOString();
-  const payload = JSON.stringify({
-    user_id: userId,
-    action: data.action,
-    invoice_id: data.invoice_id || null,
-    amount: data.amount || null,
-    prev_hash: prev_hash,
-    timestamp: timestamp
+  return await withTransaction(async (client) => {
+    // Acquire transaction-scoped advisory lock for this user to serialize hash chain writes
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [userId]);
+
+    // 1. Get previous hash for the chain
+    const lastLog = await client.query(
+      'SELECT hash FROM audit_logs WHERE user_id = $1 ORDER BY created_date DESC LIMIT 1',
+      [userId]
+    );
+    const prev_hash = lastLog.rows.length > 0 && lastLog.rows[0].hash ? lastLog.rows[0].hash : '0'.repeat(64);
+    
+    // 2. Compute SHA-256 of payload + prev_hash
+    const timestamp = data.created_date || new Date().toISOString();
+    const payload = JSON.stringify({
+      user_id: userId,
+      action: data.action,
+      invoice_id: data.invoice_id || null,
+      amount: data.amount || null,
+      prev_hash: prev_hash,
+      timestamp: timestamp
+    });
+    const hash = crypto.createHash('sha256').update(payload).digest('hex');
+
+    // 3. Store hash and prev_hash
+    await client.query(`
+      INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount,
+        agent_address, owner_address, tx_hash, details, created_date, hash, prev_hash)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    `, [
+      id, userId, data.action, data.invoice_id || null, data.invoice_number || null,
+      data.amount || null, data.agent_address || null, data.owner_address || null, data.tx_hash || null, data.details,
+      timestamp, hash, prev_hash
+    ]);
+
+    return id;
   });
-  const hash = crypto.createHash('sha256').update(payload).digest('hex');
-
-  // 3. Store hash and prev_hash
-  await query(`
-    INSERT INTO audit_logs (id, user_id, action, invoice_id, invoice_number, amount,
-      agent_address, owner_address, tx_hash, details, created_date, hash, prev_hash)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-  `, [
-    id, userId, data.action, data.invoice_id || null, data.invoice_number || null,
-    data.amount || null, data.agent_address || null, data.owner_address || null, data.tx_hash || null, data.details,
-    timestamp, hash, prev_hash
-  ]);
-
-  return id;
 }
 
 app.use(cors({ origin: true, credentials: true, allowedHeaders: ['Content-Type', 'Authorization', 'X-App-Id'] }));
@@ -110,21 +114,33 @@ async function enforceMandate(invoice) {
     new_vendor: false
   };
 
-  const lineItems = invoice.line_items || [];
+  let lineItems = invoice.line_items || [];
+  if (typeof lineItems === 'string') {
+    try { lineItems = JSON.parse(lineItems); } catch { lineItems = []; }
+  }
   
   for (const item of lineItems) {
-    if (!item.sku || !mandate.sku_allowlist.includes(item.sku)) {
+    let sku = item.sku;
+    if (!sku && AGENT_CATALOG?.catalog) {
+      const desc = (item.description || '').toLowerCase();
+      const matched = AGENT_CATALOG.catalog.find(p => 
+        desc.includes(p.name.toLowerCase()) || desc.includes(p.id.toLowerCase())
+      );
+      if (matched) sku = matched.id;
+    }
+
+    if (!sku || !mandate.sku_allowlist.includes(sku)) {
       return {
         status: 403,
         body: {
           error: 'agent_out_of_bounds',
           reason: 'sku_not_in_mandate',
-          message: `SKU '${item.sku || 'UNKNOWN'}' is not in the buyer's approved mandate allowlist.`,
+          message: `SKU '${sku || item.description || 'UNKNOWN'}' is not in the buyer's approved mandate allowlist.`,
         },
         audit: {
           action: 'settlement_blocked',
           amount: invoice.grand_total,
-          details: `Blocked: SKU '${item.sku}' not in mandate allowlist.`,
+          details: `Blocked: SKU '${sku || item.description}' not in mandate allowlist.`,
         }
       };
     }
@@ -249,6 +265,7 @@ async function seedDemoData(userId) {
   // Disabled by agent: user requested all invoices be permanently removed.
   return;
   
+  const now = new Date();
   const count = await query('SELECT COUNT(*)::int AS c FROM invoices WHERE user_id = $1', [userId]);
   // NOTE: demo seed data. No fake IPFS CIDs or fake tx hashes — those fields
   // stay empty until a REAL IPFS upload (Lighthouse) or Razorpay payment fills them.
@@ -419,6 +436,7 @@ app.post('/ap2/cart-mandate', authMiddleware, async (req, res) => {
 // --- Auth ---
 const registerSchema = z.object({ email: z.string().email(), password: z.string().min(6), role: z.string().optional() });
 const loginSchema = z.object({ email: z.string().email(), password: z.string(), role: z.string().optional() });
+const verifyOtpSchema = z.object({ email: z.string().email(), otp: z.string().min(4).max(8) });
 
 app.post('/api/auth/register', async (req, res) => {
   try {
@@ -437,7 +455,25 @@ app.post('/api/auth/register', async (req, res) => {
       [id, email, hashed, email.split('@')[0], userRole]
     );
 
-    res.json({ success: true, message: 'Verification code sent to email' });
+    // Generate secure 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpHashed = bcrypt.hashSync(otp, 10);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min expiry
+
+    await query(`
+      INSERT INTO user_otps (email, otp_hash, attempts, expires_at, created_at)
+      VALUES ($1, $2, 0, $3, NOW())
+      ON CONFLICT (email) DO UPDATE SET otp_hash = $2, attempts = 0, expires_at = $3, created_at = NOW()
+    `, [email, otpHashed, expiresAt]);
+
+    console.log(`[AUTH] Verification OTP generated for ${email}: ${otp}`);
+
+    res.json({
+      success: true,
+      message: 'Verification code sent to email',
+      // Include dev_otp in non-production for transparent testing and QA
+      ...(process.env.NODE_ENV !== 'production' ? { dev_otp: otp } : {})
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'internal_error', message: 'Something went wrong' });
@@ -446,16 +482,45 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/verify-otp', async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: 'validation_error', message: 'Email required' });
+    const parsed = verifyOtpSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'validation_error', message: parsed.error.errors[0].message });
 
-    const result = await query('SELECT id, email, name, role FROM users WHERE email = $1', [email]);
-    if (result.rows.length === 0) return res.status(404).json({ error: 'user_not_found', message: 'User not found' });
+    const { email, otp } = parsed.data;
 
+    const userRes = await query('SELECT id, email, name, role FROM users WHERE email = $1', [email]);
+    if (userRes.rows.length === 0) return res.status(404).json({ error: 'user_not_found', message: 'User not found' });
+    const user = userRes.rows[0];
+
+    const otpRes = await query(
+      'SELECT otp_hash, attempts, expires_at FROM user_otps WHERE email = $1',
+      [email]
+    );
+
+    if (otpRes.rows.length === 0) {
+      return res.status(400).json({ error: 'otp_not_found', message: 'No OTP requested for this email. Please request a new code.' });
+    }
+
+    const { otp_hash, attempts, expires_at } = otpRes.rows[0];
+
+    if (new Date() > new Date(expires_at)) {
+      return res.status(400).json({ error: 'otp_expired', message: 'OTP has expired. Please request a new one.' });
+    }
+
+    if (Number(attempts) >= 5) {
+      return res.status(429).json({ error: 'too_many_attempts', message: 'Too many incorrect attempts. Please request a new code.' });
+    }
+
+    const isValid = bcrypt.compareSync(otp, otp_hash);
+    if (!isValid) {
+      await query('UPDATE user_otps SET attempts = attempts + 1 WHERE email = $1', [email]);
+      return res.status(401).json({ error: 'invalid_otp', message: 'Invalid verification code' });
+    }
+
+    // OTP verified: clear OTP and activate user
+    await query('DELETE FROM user_otps WHERE email = $1', [email]);
     await query('UPDATE users SET is_verified = 1, updated_at = NOW() WHERE email = $1', [email]);
-    const user = result.rows[0];
-    const token = generateToken(user);
 
+    const token = generateToken(user);
     res.json({ access_token: token, user });
   } catch (err) {
     console.error(err);
@@ -463,7 +528,45 @@ app.post('/api/auth/verify-otp', async (req, res) => {
   }
 });
 
-app.post('/api/auth/resend-otp', (req, res) => res.json({ success: true }));
+app.post('/api/auth/resend-otp', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'validation_error', message: 'Email required' });
+
+    const userRes = await query('SELECT id FROM users WHERE email = $1', [email]);
+    if (userRes.rows.length === 0) return res.status(404).json({ error: 'user_not_found', message: 'User not found' });
+
+    // Rate-limit resend: require 30 seconds between requests
+    const lastOtp = await query('SELECT created_at FROM user_otps WHERE email = $1', [email]);
+    if (lastOtp.rows.length > 0) {
+      const elapsedMs = Date.now() - new Date(lastOtp.rows[0].created_at).getTime();
+      if (elapsedMs < 30000) {
+        return res.status(429).json({ error: 'rate_limited', message: 'Please wait 30 seconds before requesting another code.' });
+      }
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpHashed = bcrypt.hashSync(otp, 10);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await query(`
+      INSERT INTO user_otps (email, otp_hash, attempts, expires_at, created_at)
+      VALUES ($1, $2, 0, $3, NOW())
+      ON CONFLICT (email) DO UPDATE SET otp_hash = $2, attempts = 0, expires_at = $3, created_at = NOW()
+    `, [email, otpHashed, expiresAt]);
+
+    console.log(`[AUTH] Resent OTP for ${email}: ${otp}`);
+
+    res.json({
+      success: true,
+      message: 'New verification code sent',
+      ...(process.env.NODE_ENV !== 'production' ? { dev_otp: otp } : {})
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'internal_error', message: 'Something went wrong' });
+  }
+});
 app.post('/api/auth/login', async (req, res) => {
   try {
     const parsed = loginSchema.safeParse(req.body);
@@ -565,7 +668,7 @@ app.get('/api/invoices', authMiddleware, async (req, res) => {
   const safeField = ALLOWED_SORT_FIELDS.has(sortField) ? sortField : 'created_date';
 
   const result = await query(
-    `SELECT * FROM invoices WHERE user_id = $1 ORDER BY ${safeField} ${dir} LIMIT $2`,
+    `SELECT * FROM invoices WHERE (user_id = $1 OR buyer_id = $1) ORDER BY ${safeField} ${dir} LIMIT $2`,
     [req.user.id, limit]
   );
 
@@ -573,7 +676,7 @@ app.get('/api/invoices', authMiddleware, async (req, res) => {
 });
 
 app.get('/api/invoices/:id', authMiddleware, async (req, res) => {
-  const result = await query('SELECT * FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [req.params.id, req.user.id]);
+  const result = await query('SELECT * FROM invoices WHERE (id = $1 OR invoice_number = $1) AND (user_id = $2 OR buyer_id = $2)', [req.params.id, req.user.id]);
   if (result.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   res.json(parseInvoice(result.rows[0]));
 });
@@ -921,11 +1024,11 @@ app.post('/api/agent/b2b-buy', authMiddleware, agentBuyRateLimiter, async (req, 
   const invoiceNumber = `INV-AI-${Math.floor(1000 + Math.random() * 9000)}`;
   const invoiceId = uuidv4();
   await query(`
-    INSERT INTO invoices (id, user_id, invoice_number, recipient_name, line_items, subtotal, tax_total, grand_total, currency, status, tx_hash, invoice_date)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    INSERT INTO invoices (id, user_id, buyer_id, invoice_number, recipient_name, line_items, subtotal, tax_total, grand_total, currency, status, tx_hash, invoice_date)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
   `, [
-    invoiceId, merchant.id, invoiceNumber, `AI Buyer Agent (${req.user.email})`,
-    JSON.stringify([{ description: product.name, quantity, price: product.price, total: subtotal }]),
+    invoiceId, merchant.id, req.user.id, invoiceNumber, `AI Buyer Agent (${req.user.email})`,
+    JSON.stringify([{ sku: product.id, description: product.name, quantity, price: product.price, total: subtotal }]),
     subtotal, tax, grand_total, 'INR', 'pending', null, new Date().toISOString()
   ]);
 
@@ -969,6 +1072,7 @@ app.post('/api/checkout/order', authMiddleware, async (req, res) => {
 
   try {
     const { order } = await createAgentSettlementOrder(invoice.grand_total, invoice.invoice_number, invoice.tax_total || 0, invoiceTaxSplit(invoice));
+    await query('UPDATE invoices SET tx_hash = $1 WHERE id = $2', [order.id, invoice.id]);
     res.json({ order_id: order.id, amount: Math.round(invoice.grand_total * 100), currency: invoice.currency || 'INR' });
   } catch (err) {
     res.status(500).json({ error: 'order_failed', message: err.message });
@@ -1127,7 +1231,7 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
     const taxAmount = invoice.tax_total || 0;
     const { order } = await createAgentSettlementOrder(invoice.grand_total, invoice.invoice_number, taxAmount, invoiceTaxSplit(invoice));
     
-    await query('UPDATE invoices SET status = $1 WHERE id = $2 AND user_id = $3', ['pending', invoice.id, req.user.id]);
+    await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3 AND user_id = $4', ['pending', order.id, invoice.id, req.user.id]);
 
     await appendAuditLog(req.user.id, {
       action: 'order_created',
@@ -1337,15 +1441,31 @@ app.post('/api/agent/verify', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'invalid_signature', message: 'Payment verification failed' });
   }
 
-  const invoiceRes = await query('SELECT * FROM invoices WHERE id = $1 AND user_id = $2', [invoice_id, req.user.id]);
+  const invoiceRes = await query(
+    'SELECT * FROM invoices WHERE id = $1 AND (user_id = $2 OR buyer_id = $2)',
+    [invoice_id, req.user.id]
+  );
   if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invoiceRes.rows[0];
 
+  // Verify that the order matches the invoice anchor if an order was anchored
+  if (invoice.tx_hash && invoice.tx_hash.startsWith('order_') && invoice.tx_hash !== razorpay_order_id) {
+    return res.status(400).json({ error: 'order_mismatch', message: 'Razorpay order ID does not match this invoice' });
+  }
+
+  // Prevent double-spend / replaying an existing payment ID on multiple invoices
+  const duplicatePayment = await query(
+    'SELECT id, invoice_number FROM invoices WHERE tx_hash = $1 AND id != $2',
+    [razorpay_payment_id, invoice_id]
+  );
+  if (duplicatePayment.rows.length > 0) {
+    return res.status(409).json({ error: 'duplicate_payment', message: 'This payment transaction has already been credited to another invoice' });
+  }
+
   // ATOMIC CLAIM (TOCTOU guard): only mark paid if not already paid/processing.
-  // Prevents concurrent verify calls from double-logging a settlement.
   const claim = await query(
     `UPDATE invoices SET status = 'paid', tx_hash = $1, payment_method = 'razorpay_agent', updated_date = NOW()
-     WHERE id = $2 AND user_id = $3 AND status NOT IN ('paid', 'processing') RETURNING id`,
+     WHERE id = $2 AND (user_id = $3 OR buyer_id = $3) AND status NOT IN ('paid', 'processing') RETURNING id`,
     [razorpay_payment_id, invoice_id, req.user.id]
   );
   if (claim.rows.length === 0) {
@@ -1732,7 +1852,10 @@ app.delete('/api/catalog/:id', authMiddleware, async (req, res) => {
 // --- Chat Transcripts ---
 app.get('/api/chat/sessions', authMiddleware, async (req, res) => {
   try {
-    const sessions = await query("SELECT id, buyer_name, updated_at AT TIME ZONE 'UTC' as updated_at, jsonb_array_length(messages) as message_count FROM chat_sessions ORDER BY updated_at DESC");
+    const sessions = await query(
+      "SELECT id, buyer_name, updated_at AT TIME ZONE 'UTC' as updated_at, jsonb_array_length(messages) as message_count FROM chat_sessions WHERE user_id = $1 ORDER BY updated_at DESC",
+      [req.user.id]
+    );
     res.json(sessions.rows);
   } catch (err) {
     res.status(500).json({ error: 'transcript_error', message: err.message });
@@ -1741,7 +1864,7 @@ app.get('/api/chat/sessions', authMiddleware, async (req, res) => {
 
 app.get('/api/chat/sessions/:id', authMiddleware, async (req, res) => {
   try {
-    const sessions = await query('SELECT * FROM chat_sessions WHERE id = $1', [req.params.id]);
+    const sessions = await query('SELECT * FROM chat_sessions WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
     res.json(sessions.rows[0] || null);
   } catch (err) {
     res.status(500).json({ error: 'transcript_error', message: err.message });
@@ -1750,7 +1873,7 @@ app.get('/api/chat/sessions/:id', authMiddleware, async (req, res) => {
 
 app.delete('/api/chat/sessions/:id', authMiddleware, async (req, res) => {
   try {
-    await query('DELETE FROM chat_sessions WHERE id = $1', [req.params.id]);
+    await query('DELETE FROM chat_sessions WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'transcript_error', message: err.message });

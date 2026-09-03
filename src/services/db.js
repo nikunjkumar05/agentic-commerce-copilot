@@ -69,10 +69,10 @@ export const db = {
         body: JSON.stringify({ email, password, role })
       });
     },
-    verifyOtp: async ({ email }) => {
+    verifyOtp: async ({ email, otp }) => {
       const data = await fetchApi('/auth/verify-otp', {
         method: 'POST',
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email, otp })
       });
       if (data.access_token) localStorage.setItem('app_access_token', data.access_token);
       return data;

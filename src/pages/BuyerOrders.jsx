@@ -1,7 +1,7 @@
 import { db } from '@/services/db';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent } from '@/components/ui/card';
-import { Package, IndianRupee, ArrowRight, Download } from 'lucide-react';
+import { Package, ArrowRight, Download } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { generateInvoicePDF } from '@/lib/pdfGenerator';

@@ -22,6 +22,7 @@ export default function InvoiceDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [tab, setTab] = useState('preview');
   const [isEditing, setIsEditing] = useState(false);
   const [editedInvoice, setEditedInvoice] = useState(null);
@@ -159,8 +160,6 @@ export default function InvoiceDetail() {
   if (!invoice) return <div className="p-8 text-center text-muted-foreground">Invoice not found</div>;
 
   const displayInvoice = isEditing ? editedInvoice : invoice;
-
-  const { user } = useAuth();
   
   return (
     <div className="pb-24">

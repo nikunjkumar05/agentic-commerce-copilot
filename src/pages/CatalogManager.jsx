@@ -3,9 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
-import { Plus, Trash2, Edit2, Package, Tag, Save, X } from 'lucide-react';
+import { Plus, Trash2, Package, Tag } from 'lucide-react';
 
 export default function CatalogManager() {
   const queryClient = useQueryClient();
@@ -34,7 +33,7 @@ export default function CatalogManager() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries(['catalog']);
+      queryClient.invalidateQueries({ queryKey: ['catalog'] });
       setIsAdding(false);
       setFormData({ name: '', description: '', price: '', margin_floor: '' });
       toast.success('Product added successfully');
@@ -53,7 +52,7 @@ export default function CatalogManager() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries(['catalog']);
+      queryClient.invalidateQueries({ queryKey: ['catalog'] });
       toast.success('Product deleted successfully');
     },
     onError: () => toast.error('Failed to delete product')

@@ -59,6 +59,8 @@ export const AuthProvider = ({ children }) => {
       isLoadingAuth,
       logout,
       checkUserAuth,
+      refetchProfile: checkUserAuth,
+      navigateToLogin: () => { window.location.href = '/login'; },
       // Returning legacy mock states so your ProtectedRoute components don't break
       isLoadingPublicSettings: false,
       authError: null,

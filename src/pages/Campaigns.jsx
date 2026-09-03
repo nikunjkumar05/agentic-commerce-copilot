@@ -49,7 +49,7 @@ export default function Campaigns() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries(['campaigns']);
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
       setIsNew(false);
       setEditId(null);
       setFormData({ name: '', upsell_product_ids: [], target_statuses: ['validated'] });
@@ -68,7 +68,7 @@ export default function Campaigns() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries(['campaigns']);
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
       toast.success('Campaign deleted');
     }
   });
@@ -84,8 +84,8 @@ export default function Campaigns() {
       return res.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries(['campaigns']);
-      queryClient.invalidateQueries(['invoices']);
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
       toast.success(`Launched! Generated ${data.drafts_created} invoice drafts.`);
     }
   });
@@ -101,8 +101,8 @@ export default function Campaigns() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries(['campaigns']);
-      queryClient.invalidateQueries(['invoices']);
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
       toast.success('Campaign revoked and drafts deleted');
     }
   });

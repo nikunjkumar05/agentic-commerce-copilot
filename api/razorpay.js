@@ -93,7 +93,7 @@ export function computeTaxSplit({ subtotal, rate, sellerGstin, buyerGstin }) {
  * @param {string} receipt - A unique receipt id (invoice id)
  * @param {number} taxAmount - The amount of GST tax to automatically split
  */
-export async function createAgentSettlementOrder(amount, receipt, taxAmount = 0) {
+export async function createAgentSettlementOrder(amount, receipt, taxAmount = 0, taxSplit = null) {
   requireRazorpayConfig();
   const totalPaise = Math.round(amount * 100);
   const taxPaise = Math.round(taxAmount * 100);
@@ -113,9 +113,9 @@ export async function createAgentSettlementOrder(amount, receipt, taxAmount = 0)
       vendor_net_paise: (totalPaise - taxPaise).toString(),
       tax_split_reason: 'Autonomous GST Withholding by AI Agent (Razorpay Route)',
     };
-// Optional dynamic CGST/SGST/IGST split (computed at the call site from GSTin state codes);
-// reflected in the Route notes so the split is auditable and matches Indian GST law.
-const _split = arguments[3] || null;
+    // Optional dynamic CGST/SGST/IGST split (computed at the call site from GSTin state codes);
+    // reflected in the Route notes so the split is auditable and matches Indian GST law.
+    const _split = taxSplit || null;
 if (_split && _split.mode) {
   const cgst = _split.cgst || 0;
   const sgst = _split.sgst || 0;

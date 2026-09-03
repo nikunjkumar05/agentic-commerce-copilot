@@ -26,7 +26,7 @@ export default function StoragePage() {
   // estimate — never a fake exact number.
   const approximateBytes = storedInvoices.reduce((sum, inv) => {
     try {
-      return sum + Buffer.byteLength(JSON.stringify(inv), 'utf8');
+      return sum + new TextEncoder().encode(JSON.stringify(inv)).length;
     } catch {
       return sum;
     }

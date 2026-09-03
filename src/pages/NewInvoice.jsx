@@ -7,7 +7,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { MessageSquare, FormInput, Save, ShieldCheck, Brain, ArrowLeft } from 'lucide-react';
+import { MessageSquare, FormInput, Save, ShieldCheck, ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { generateInvoiceNumber } from '@/lib/invoiceHelpers';
 import ChatInput from '@/components/invoice/ChatInput';

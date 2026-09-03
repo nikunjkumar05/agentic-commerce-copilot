@@ -24,7 +24,6 @@ import SettingsPage from '@/pages/SettingsPage';
 import AgentChat from '@/pages/AgentChat';
 import BuyerOrders from '@/pages/BuyerOrders';
 import BuyerSettings from '@/pages/BuyerSettings';
-import SimulationTheater from '@/pages/SimulationTheater';
 import AuditTrailPage from '@/pages/AuditTrailPage';
 import DemoPage from '@/pages/DemoPage';
 
@@ -72,7 +71,6 @@ const AuthenticatedApp = () => {
           <Route path="/merchant/campaigns" element={<Campaigns />} />
           <Route path="/merchant/catalog" element={<CatalogManager />} />
           <Route path="/merchant/transcripts" element={<Transcripts />} />
-          <Route path="/simulation" element={<SimulationTheater />} />
           <Route path="/merchant/audit" element={<AuditTrailPage />} />
           <Route path="/merchant/invoice/new" element={<NewInvoice />} />
           <Route path="/invoice/:id" element={<InvoiceDetail />} />

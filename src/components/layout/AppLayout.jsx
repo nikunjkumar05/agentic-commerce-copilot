@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Outlet, Link, useLocation, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Receipt, Activity, Store, Terminal, Fingerprint, SlidersHorizontal, Menu, LogOut, ArrowLeft, Zap, MessageSquare, Package } from 'lucide-react';
+import { LayoutDashboard, Receipt, Activity, Store, Terminal, Fingerprint, SlidersHorizontal, Menu, LogOut, MessageSquare, Package } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -23,6 +23,7 @@ const buyerNavItems = [
 export default function AppLayout() {
   const location = useLocation();
   const { logout, user } = useAuth();
+  const [isExpanded, setIsExpanded] = useState(false);
   const isDashboard = location.pathname === '/merchant';
   
   // Use the authenticated user's role to permanently lock them into their persona's UI
@@ -34,8 +35,6 @@ export default function AppLayout() {
   if (!isBuyerPortal && location.pathname.startsWith('/buyer')) {
     return <Navigate to="/merchant" replace />;
   }
-  
-  const [isExpanded, setIsExpanded] = useState(false);
 
   return (
     <div className={cn("min-h-screen bg-gray-50 flex flex-col md:pl-16")}>

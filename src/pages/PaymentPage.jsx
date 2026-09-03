@@ -42,14 +42,6 @@ export default function PaymentPage() {
 
   const [milestones, setMilestones] = useState([]);
 
-  // Sync milestones from the real database invoice row
-  useEffect(() => {
-    if (invoice && invoice.milestones) {
-      // Only set if not already set, or if we want to force sync
-      setMilestones(invoice.milestones);
-    }
-  }, [invoice]);
-
   const { data: invoice, isLoading } = useQuery({
     queryKey: ['invoice', id],
     queryFn: async () => {
@@ -57,6 +49,14 @@ export default function PaymentPage() {
       return list[0];
     },
   });
+
+  // Sync milestones from the real database invoice row
+  useEffect(() => {
+    if (invoice && invoice.milestones) {
+      // Only set if not already set, or if we want to force sync
+      setMilestones(invoice.milestones);
+    }
+  }, [invoice]);
 
   const [utrNumber, setUtrNumber] = useState('');
 
