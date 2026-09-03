@@ -1,0 +1,1 @@
+import 'dotenv/config'; import { query } from './api/_db.js'; query('ALTER TABLE users ADD COLUMN IF NOT EXISTS razorpay_customer_id TEXT; ALTER TABLE users ADD COLUMN IF NOT EXISTS razorpay_token_id TEXT;').then(res => { console.log('Added'); process.exit(0); });
