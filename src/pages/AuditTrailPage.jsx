@@ -12,10 +12,31 @@ export default function AuditTrailPage() {
   const [verificationComplete, setVerificationComplete] = useState(false);
   const [verificationError, setVerificationError] = useState(null);
   const [filter, setFilter] = useState('all');
+  const [opsFlags, setOpsFlags] = useState({ settle_disabled: false, llm_disabled: false });
+  const [opsBusy, setOpsBusy] = useState(false);
   const { data: logs = [], isLoading } = useQuery({
     queryKey: ['audit-logs-full'],
     queryFn: () => db.entities.AgentAuditLog.list('-created_date', 100),
   });
+
+  const authHeaders = () => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('app_access_token')}` });
+  const refreshOpsFlags = async () => {
+    try {
+      const res = await fetch('/api/ops/flags', { headers: authHeaders() });
+      if (res.ok) setOpsFlags(await res.json());
+    } catch { /* ops panel is demo-only; never break the ledger view */ }
+  };
+  const toggleOpsFlag = async (flag) => {
+    setOpsBusy(true);
+    try {
+      const res = await fetch('/api/ops/flags', {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ flag, enabled: !opsFlags[flag] })
+      });
+      const data = await res.json().catch(() => null);
+      if (data && typeof data.enabled === 'boolean') setOpsFlags((f) => ({ ...f, [flag]: data.enabled }));
+      else await refreshOpsFlags();
+    } finally { setOpsBusy(false); }
+  };
 
   const verifyIntegrity = async () => {
     setIsVerifying(true);
@@ -109,6 +130,34 @@ export default function AuditTrailPage() {
               {t.label}
             </button>
           ))}
+        </div>
+
+        {/* Failure Theater: judge-visible kill-switches. Every toggle is audited server-side. */}
+        <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-md">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <p className="text-xs font-bold text-amber-700">FAILURE THEATER (live kill-switches, audited)</p>
+            <Button variant="ghost" size="sm" className="h-6 text-[11px]" onClick={refreshOpsFlags}>Refresh</Button>
+          </div>
+          <div className="mt-2 flex gap-2 flex-wrap">
+            <Button
+              variant={opsFlags.settle_disabled ? 'destructive' : 'outline'}
+              size="sm" className="h-7 text-[11px]" disabled={opsBusy}
+              onClick={() => toggleOpsFlag('settle_disabled')}
+            >
+              {opsFlags.settle_disabled ? 'Settlement HALTED — click to release' : 'Halt autonomous settlement'}
+            </Button>
+            <Button
+              variant={opsFlags.llm_disabled ? 'destructive' : 'outline'}
+              size="sm" className="h-7 text-[11px]" disabled={opsBusy}
+              onClick={() => toggleOpsFlag('llm_disabled')}
+            >
+              {opsFlags.llm_disabled ? 'LLM HALTED (fallback cart live) — click to release' : 'Simulate LLM outage'}
+            </Button>
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Halted settlement returns <span className="font-mono">503 settlement_halted</span> with a ledger entry.
+            LLM outage returns <span className="font-mono">fallback_mode:true</span> — the Agent Chat drops into manual cart checkout.
+          </p>
         </div>
       </div>
 

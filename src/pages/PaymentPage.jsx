@@ -61,22 +61,26 @@ export default function PaymentPage() {
   const [utrNumber, setUtrNumber] = useState('');
 
   const handleBankTransfer = async () => {
-    if (!utrNumber.trim()) {
-      toast.error('Please enter a valid UTR reference number.');
+    if (!utrNumber.trim() || utrNumber.trim().length < 6) {
+      toast.error('Please enter a valid UTR reference number (min 6 characters).');
       return;
     }
     setIsProcessing(true);
     try {
-      await db.entities.Invoice.update(id, { tx_hash: utrNumber, status: 'paid', payment_method: 'bank_transfer' });
+      // GATED: a free-text UTR is a reconciliation *claim*, not settlement proof.
+      // The invoice stays `pending` until the merchant confirms receipt; only
+      // Razorpay-verified paths (/api/agent/verify, webhooks) may mark `paid`.
+      // The server rejects direct PUT to paid (403 manual_settlement_forbidden).
+      await db.entities.Invoice.update(id, { tx_hash: utrNumber.trim(), payment_method: 'bank_transfer_claimed' });
       await db.entities.AgentAuditLog.create({
-        action: 'settlement', invoice_id: id, invoice_number: invoice.invoice_number,
-        amount: invoice.grand_total, tx_hash: utrNumber, details: 'Manual Bank Transfer (NEFT/RTGS) verification'
+        action: 'manual_reconciliation_claimed', invoice_id: id, invoice_number: invoice.invoice_number,
+        amount: invoice.grand_total, tx_hash: utrNumber.trim(), details: 'Bank transfer UTR claimed by buyer — pending merchant confirmation. Invoice NOT marked paid.'
       });
       queryClient.invalidateQueries({ queryKey: ['invoice', id] });
-      setReceipt({ txHash: utrNumber, method: 'bank_transfer', amount: invoice.grand_total, network: 'Fiat' });
-      toast.success('Payment recorded successfully!');
+      setReceipt({ txHash: utrNumber.trim(), method: 'bank_transfer (claim pending confirmation)', amount: invoice.grand_total, network: 'Fiat' });
+      toast.success('UTR claim recorded — awaiting merchant confirmation.');
     } catch (err) {
-      toast.error('Failed to record payment.');
+      toast.error('Failed to record claim.');
     } finally {
       setIsProcessing(false);
     }
@@ -445,7 +449,7 @@ export default function PaymentPage() {
               <CardTitle className="text-sm flex items-center gap-2"><Wallet className="w-4 h-4 text-blue-500" /> Manual Bank Transfer</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <p className="text-xs text-muted-foreground">Mark this invoice as paid if you have settled it outside the platform via NEFT/RTGS.</p>
+              <p className="text-xs text-muted-foreground">Settled outside the platform via NEFT/RTGS? Record the UTR as a claim — the merchant confirms receipt before the invoice is marked paid.</p>
               <div className="bg-muted/50 rounded-xl p-3 space-y-2">
                 <div className="flex justify-between text-sm"><span className="text-muted-foreground">Amount Due</span><span className="font-bold">{formatCurrency(invoice.grand_total, invoice.currency)}</span></div>
               </div>
@@ -459,7 +463,7 @@ export default function PaymentPage() {
                 />
               </div>
               <Button className="w-full h-12 text-sm font-semibold" onClick={handleBankTransfer} disabled={isProcessing || invoice.status === 'paid'}>
-                {isProcessing ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Processing...</> : 'Record Payment'}
+                {isProcessing ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Processing...</> : 'Record UTR Claim'}
               </Button>
             </CardContent>
           </Card>

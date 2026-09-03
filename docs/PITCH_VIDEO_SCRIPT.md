@@ -2,47 +2,45 @@
 
 **Rule: every claim on screen must be backed by something the viewer can verify in the repo (code, test, or live Razorpay dashboard).**
 
+## [0:00–0:20] Hook + problem
+> "Enterprises want AI agents that can spend money. The blocker isn't capability — it's trust: who stops an agent from overspending? Who proves what the agent did?"
+
+Show: Dashboard → one line: "Agentic Commerce Co-Pilot — **every money action explainable, bounded, gated, cryptographically audited**."
+
+## [0:20–1:50] Foreign agent buys end to end (the track, verbatim)
+Terminal — a buyer with no account, no cookies, just `curl`:
+```bash
+node scripts/agent_buyer_simulation.mjs   # catalog → 402 challenge → settle
+```
+- Show the `Www-Authenticate: Razorpay order_id=...` header, then the settle: real `pay_...` (mandate bound) or real `plink_...` escalation (no mandate).
+- Two **distinct identities**: merchant books, buyer recipient; ledger entries on **both** sides.
+- Narration: "Make a merchant transactable by an AI buyer end to end — done, with zero onboarding."
+
+## [1:50–3:20] Gated money + graceful failure (the bar, verbatim)
+- Settings → cap ₹50,000 → chat *"invoice for ₹1,00,000 and pay it"* → **403** + `settlement_blocked` in Audit Trail.
+- Audit Trail → **Failure Theater**: halt settlement → next settle returns `503 settlement_halted` (audited); simulate LLM outage → chat drops into manual cart checkout.
+- Below-floor quote: `negotiated_price: 1` → `400 margin_floor_violation` **before** any Razorpay order exists.
+- Narration: "Limits live in the database and in deterministic gates — the LLM cannot talk its way past them. `node scripts/guardrail_eval.mjs` proves it: 15/15 offline gates, adversarial API probes blocked, zero false blocks."
+
+## [3:20–4:20] Growth, measured
+- `node scripts/demo_funnel.mjs` → funnel JSON: 10 suggested → 3 accepted (30% accept rate) on an isolated demo merchant.
+- Dashboard AI Lift card: same `suggested → accepted → paid` funnel; pay one DEMO invoice in test mode → webhook → `paid` ticks live.
+- Pack-bundle: `POST /api/agent/pack-bundle` fills revealed-budget headroom with the highest-margin complement — deterministic math, not LLM vibes.
+
+## [4:20–5:00] Proof, not promises
+- Audit Trail → **Verify Integrity** → "Chain Validated" (full-row SHA-256 chain, `timingSafeEqual` HMACs).
+- Tamper one row → "Tampering Detected: block \<id\>". Legacy rows? `node scripts/backfill_audit_hashes.mjs` migrates V1→V2, refuses to touch genuinely broken chains.
+- Close on `docs/limitations.md`: Route split is notes-only without a linked account, UAP/ACP are discovery stubs, mandates are per-user by design. "Every money action explainable, bounded, gated."
+- Final card: **test commands + funnel number + limitations link.**
+
 ## [0:00–0:30] Hook + Problem
 > "Enterprises want AI agents that can spend money. The blocker isn't capability — it's trust: who stops an agent from overspending? Who proves what the agent did?"
 
 Show: Dashboard (clean UI) → one line: "This is an Agentic Commerce Co-Pilot where **every money action is explainable, bounded, gated, and cryptographically audited**."
 
-## [0:30–1:30] The Safety Gate (bounded agency)
-Action: Settings → set Delegation Limit ₹50,000 → Agent Chat → type *"Generate an invoice for ₹1,00,000 and pay it"*.
-- Agent **blocked by the backend** (show the 403 + the `settlement_blocked` entry in the Audit Trail page).
-- Narration: "The limit lives in the database, not the prompt — the client cannot talk its way past it."
-
-## [1:30–2:45] Real S2S Settlement (no checkout widget)
-Action: *"Generate an invoice for ₹5,000 and pay it"*. Then run validation as the human.
-- Show the two honest modes:
-  - **Mandate mode:** real Razorpay `pay_...` ID, verified `status=captured` by re-fetching from Razorpay (show `captureAutonomousPayment` in `api/razorpay.js`).
-  - **No token?** The agent escalates to a **real Payment Link** (`plink_...`) — it knows its limits.
-- Pay the payment link live → webhook fires → HMAC-verified, amount-checked, idempotent → invoice flips to `paid`.
-
-## [2:45–3:45] Agent-to-Agent: x402 end to end
-Terminal (from README):
-```bash
-curl -X POST .../api/agent/b2b-buy   # → HTTP 402 challenge (order_id, invoice_id)
-curl -X POST .../api/agent/b2b-pay   # → buyer agent settles or escalates
-```
-- Two **distinct identities**: invoice in the merchant's books, recipient is the buyer agent. Show `x402_test.mjs` output.
-- Narration: "This is the 'make a merchant transactable by an AI buyer end to end' story — with audit entries on **both** sides."
-
-## [3:45–4:30] AI Growth — measured, not claimed
-- Agent suggests an upsell **with a reason** (catalog-grounded, no hallucinated prices — show the catalog injected into the system prompt).
-- Dashboard **AI Lift** card: `suggested → accepted → paid` funnel + "X% of paid volume, Y agent-settled".
-- Narration: "Growth here is a measured funnel, not a vanity counter."
-
-## [4:30–5:00] Proof, not promises
-- Audit Trail → **Verify Integrity** → "Chain Validated".
-- Tamper a row in the DB → verify again → **"Tampering Detected: block <id>"**.
-- Close: "Tests prove every claim: webhook HMAC, race-safety, ledger tamper-detection — `node webhook_test.mjs && node idempotency_test.mjs && node chain_test.mjs`."
-- Final card: **"Every money action explainable, bounded, gated."**
-
----
-
 ### Recording checklist
 - [ ] Razorpay test dashboard visible when a real `pay_`/`plink_` ID appears
-- [ ] Cursor slow on key code lines (`compliance_score: null`, atomic claim SQL, HMAC raw-body)
-- [ ] No fake data on screen (seeds have no fake CIDs/tx hashes)
+- [ ] `node scripts/guardrail_eval.mjs` output on screen (15/15 + live probes)
+- [ ] `node scripts/demo_funnel.mjs --report` JSON on the growth slide
+- [ ] No fake data on screen (demo seeds labeled DEMO; paid moves only via real test payment)
 - [ ] Demo Mode badge visible if Mistral key absent — honesty is part of the pitch

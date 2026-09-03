@@ -13,6 +13,12 @@ import 'express-async-errors';
 
 const app = express();
 
+// Canonical ledger number: node-postgres returns NUMERIC(12,2) as a string
+// ("5000.00") while callers pass JS numbers (5000). Both must hash identically,
+// or verification would false-flag every row with an amount. `||` semantics
+// are preserved (0 and '' both map to null, exactly as before).
+const canonLedgerAmount = (v) => (v || null) === null ? null : Number(v);
+
 export async function appendAuditLog(userId, data) {
   const id = uuidv4();
   return await withTransaction(async (client) => {
@@ -48,7 +54,7 @@ export async function appendAuditLog(userId, data) {
       action: data.action,
       invoice_id: data.invoice_id || null,
       invoice_number: data.invoice_number || null,
-      amount: data.amount || null,
+      amount: canonLedgerAmount(data.amount),
       agent_address: data.agent_address || null,
       owner_address: data.owner_address || null,
       tx_hash: data.tx_hash || null,
@@ -777,8 +783,22 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
   const exists = await query('SELECT id FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [req.params.id, req.user.id]);
   if (exists.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const internalId = exists.rows[0].id;
-
   const data = req.body;
+
+  // MONEY GATE: invoices may only reach `paid` via verified settlement paths
+  // (/api/agent/verify, webhooks, auto-settle mandate capture). Direct PUT to
+  // paid (e.g. free-text UTR) would bypass Razorpay proof — refuse loudly.
+  if (data.status === 'paid') {
+    await appendAuditLog(req.user.id, {
+      action: 'settlement_blocked',
+      invoice_id: internalId,
+      details: 'Blocked direct PUT to status=paid without Razorpay verification. Use /api/agent/verify or webhook settlement.',
+    }).catch(() => {});
+    return res.status(403).json({
+      error: 'manual_settlement_forbidden',
+      message: 'Marking an invoice paid requires Razorpay verification (/api/agent/verify) or a verified webhook — direct status updates to paid are forbidden.',
+    });
+  }
   const sets = [];
   const params = [];
   let i = 1;
@@ -792,6 +812,7 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
   ]);
   for (const [key, value] of Object.entries(data)) {
     if (!ALLOWED_UPDATE_FIELDS.has(key)) continue;
+    if (key === 'status' && value === 'paid') continue;
     
     let processedValue = value;
     if (key === 'line_items') {
@@ -971,14 +992,16 @@ app.get('/api/audit-logs/verify', authMiddleware, async (req, res) => {
       break;
     }
 
-    // 2. Recompute the hash of the current payload over ALL fields (V2)
+    // 2. Recompute the hash of the current payload over ALL fields (V2).
+    // Amounts are canonicalized via canonLedgerAmount: NUMERIC columns come
+    // back from Postgres as strings ("5000.00") but were hashed as numbers.
     const payloadV2 = JSON.stringify({
       user_id: log.user_id,
       sequence_num: Number(log.sequence_num),
       action: log.action,
       invoice_id: log.invoice_id || null,
       invoice_number: log.invoice_number || null,
-      amount: log.amount || null,
+      amount: canonLedgerAmount(log.amount),
       agent_address: log.agent_address || null,
       owner_address: log.owner_address || null,
       tx_hash: log.tx_hash || null,
@@ -1233,6 +1256,10 @@ app.post('/api/agent/v1/quote', authMiddleware, async (req, res) => {
 });
 
 async function handleSettleB2BPay(req, res) {
+  if (await getOpsFlag('settle_disabled')) {
+    await appendAuditLog(req.user.id, { action: 'settlement_blocked', details: 'Blocked: ops kill-switch settle_disabled is engaged.' }).catch(() => {});
+    return res.status(503).json({ error: 'settlement_halted', message: 'Autonomous settlement is halted by the ops kill-switch. Escalate to a human.' });
+  }
   const { invoice_id, order_id } = req.body;
   if (!invoice_id || !order_id) {
     return res.status(400).json({ error: 'bad_request', message: 'invoice_id and order_id (from the 402 challenge) are required.' });
@@ -1286,7 +1313,7 @@ async function handleSettleB2BPay(req, res) {
         action: 'x402_purchase_paid',
         invoice_id: invoice.id, invoice_number: invoice.invoice_number,
         amount: invoice.grand_total, tx_hash: settlement.payment.id,
-        details: `Buyer agent completed the 402 challenge: paid ${settlement.payment.id} to merchant.`
+        details: `Buyer agent completed the 402 challenge: paid ${settlement.payment.id} to merchant (mandate source: ${settlement.via}).`
       });
 
       return res.json({
@@ -1294,7 +1321,8 @@ async function handleSettleB2BPay(req, res) {
         payment_protocol: 'x402_razorpay',
         order_id,
         payment_id: settlement.payment.id,
-        status: 'captured'
+        status: 'captured',
+        mandate_via: settlement.via
       });
     }
 
@@ -1328,6 +1356,9 @@ app.post('/api/agent/b2b-pay', authMiddleware, agentSettleRateLimiter, handleSet
 
 // --- Razorpay Agentic Commerce ---
 app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req, res) => {
+  if (await getOpsFlag('settle_disabled')) {
+    return res.status(503).json({ error: 'settlement_halted', message: 'Autonomous settlement is halted by the ops kill-switch.' });
+  }
   const { invoice_id } = req.body;
   const userRes = await query('SELECT agent_delegation_max FROM users WHERE id = $1', [req.user.id]);
   const delegation_max = userRes.rows[0]?.agent_delegation_max || 0;
@@ -1408,6 +1439,9 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
 });
 
 app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async (req, res) => {
+  if (await getOpsFlag('settle_disabled')) {
+    return res.status(503).json({ error: 'settlement_halted', message: 'Autonomous settlement is halted by the ops kill-switch.' });
+  }
   const { invoice_id } = req.body;
   const userRes = await query('SELECT agent_delegation_max, razorpay_customer_id, razorpay_token_id FROM users WHERE id = $1', [req.user.id]);
   const delegation_max = userRes.rows[0]?.agent_delegation_max || 0;
@@ -1488,10 +1522,10 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
         invoice_number: invoice.invoice_number,
         amount: invoice.grand_total,
         tx_hash: txHash,
-        details: `Autonomous S2S capture successful. Razorpay Order ${order.id}, Payment ${txHash} verified as 'captured'.`
+        details: `Autonomous S2S capture successful. Razorpay Order ${order.id}, Payment ${txHash} verified as 'captured' (mandate source: ${settlement.via}).`
       });
 
-      response = { success: true, message: 'Autonomously captured via S2S API', order_id: order.id, payment_id: txHash, invoice_uuid: invoice.id };
+      response = { success: true, message: 'Autonomously captured via S2S API', order_id: order.id, payment_id: txHash, invoice_uuid: invoice.id, mandate_via: settlement.via };
     } else {
       // No mandate token — agent escalates to a REAL Razorpay Payment Link
       txHash = order.id;
@@ -1590,6 +1624,125 @@ app.delete('/api/user/razorpay-mandate', authMiddleware, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: 'db_error', message: err.message });
   }
+});
+
+// --- AP2-style signed Intent Mandate (authorization layer) ---
+// Returns the caller's CFO mandate as a tamper-evident document: HMAC-signed
+// with RAZORPAY_KEY_SECRET (fail-closed when unconfigured). An agent carrying
+// this mandate proves a human authorized the spend envelope; enforcement still
+// happens server-side in enforceBudget/enforceMandate — the signature is the
+// audit artifact, not the gate.
+app.get('/api/user/mandate', authMiddleware, async (req, res) => {
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+  if (!secret) return res.status(503).json({ error: 'mandate_signing_unconfigured', message: 'RAZORPAY_KEY_SECRET is not set — cannot sign mandates.' });
+  const uRes = await query(
+    'SELECT agent_delegation_max, agent_daily_limit, agent_daily_spent, razorpay_customer_id FROM users WHERE id = $1',
+    [req.user.id]
+  );
+  const u = uRes.rows[0] || {};
+  const mandate = {
+    protocol: 'ap2_intent_mandate/0.1',
+    subject: req.user.id,
+    per_transaction_max: Number(u.agent_delegation_max || 0),
+    daily_limit: Number(u.agent_daily_limit || 0),
+    daily_spent: Number(u.agent_daily_spent || 0),
+    mandate_bound: Boolean(u.razorpay_customer_id),
+    issued_at: new Date().toISOString(),
+  };
+  const signature = crypto.createHmac('sha256', secret).update(JSON.stringify(mandate)).digest('hex');
+  res.json({ mandate, signature, algorithm: 'HMAC-SHA256' });
+});
+
+// --- Ops kill-switches (Failure Theater) ---
+// Judges can halt autonomous money movement without deploying. Every change is audited.
+async function getOpsFlag(flag) {
+  try {
+    const r = await query('SELECT enabled FROM ops_flags WHERE flag = $1', [flag]);
+    return r.rows[0]?.enabled === true;
+  } catch { return false; }
+}
+app.get('/api/ops/flags', authMiddleware, async (req, res) => {
+  res.json({
+    settle_disabled: await getOpsFlag('settle_disabled'),
+    llm_disabled: await getOpsFlag('llm_disabled'),
+  });
+});
+app.post('/api/ops/flags', authMiddleware, async (req, res) => {
+  const { flag, enabled } = req.body || {};
+  if (!['settle_disabled', 'llm_disabled'].includes(flag)) {
+    return res.status(400).json({ error: 'bad_request', message: 'flag must be settle_disabled or llm_disabled' });
+  }
+  await query(
+    `INSERT INTO ops_flags (flag, enabled, updated_at) VALUES ($1, $2, NOW())
+     ON CONFLICT (flag) DO UPDATE SET enabled = $2, updated_at = NOW()`,
+    [flag, Boolean(enabled)]
+  );
+  await appendAuditLog(req.user.id, {
+    action: enabled ? 'ops_kill_switch_engaged' : 'ops_kill_switch_released',
+    details: `Ops flag ${flag} set to ${Boolean(enabled)}.`,
+  });
+  res.json({ flag, enabled: Boolean(enabled) });
+});
+
+// --- Budget-packing bundler (deterministic revenue lever) ---
+// Given a disclosed budget cap and an optional anchor SKU, returns the
+// highest-margin complement bundle that fits entirely within headroom.
+// Pure function over the products table — the LLM may suggest, but this
+// endpoint is the auditable math judges can re-run.
+app.post('/api/agent/pack-bundle', authMiddleware, async (req, res) => {
+  const { budget_cap, base_sku = null, exclude_skus = [] } = req.body || {};
+  if (!Number.isFinite(Number(budget_cap)) || Number(budget_cap) <= 0) {
+    return res.status(400).json({ error: 'bad_request', message: 'budget_cap (positive number) is required' });
+  }
+  const cap = Number(budget_cap);
+  const productsRes = await query('SELECT sku, name, description, price, margin_floor FROM products');
+  const catalog = productsRes.rows.filter(p => p.sku && !exclude_skus.includes(p.sku));
+  if (catalog.length === 0) return res.status(404).json({ error: 'empty_catalog', message: 'No products available to pack.' });
+  const anchor = base_sku ? catalog.find(p => p.sku === base_sku) : null;
+  if (base_sku && !anchor) return res.status(404).json({ error: 'invalid_sku', message: `Base SKU ${base_sku} not found.` });
+  const anchorTotal = anchor ? Number(anchor.price) * 1.18 : 0;
+  const headroom = cap - anchorTotal;
+  if (headroom < 0) {
+    return res.status(402).json({ error: 'budget_exceeded', message: `Anchor alone (₹${anchorTotal.toFixed(2)} incl. tax) exceeds budget cap ₹${cap}.`, headroom });
+  }
+  // Candidates: complements fitting headroom, ranked by absolute margin (price - floor).
+  const candidates = catalog
+    .filter(p => !anchor || p.sku !== anchor.sku)
+    .map(p => ({ ...p, priceN: Number(p.price), margin: Number(p.price) - Number(p.margin_floor), total: Number(p.price) * 1.18 }))
+    .filter(p => p.total <= headroom && p.margin > 0)
+    .sort((a, b) => b.margin - a.margin);
+  const pick = candidates[0] || null;
+  res.json({
+    budget_cap: cap,
+    anchor: anchor ? { sku: anchor.sku, name: anchor.name, total_incl_tax: Number(anchorTotal.toFixed(2)) } : null,
+    headroom: Number(headroom.toFixed(2)),
+    recommendation: pick ? {
+      sku: pick.sku, name: pick.name, price: pick.priceN,
+      total_incl_tax: Number(pick.total.toFixed(2)),
+      expected_margin: Number(pick.margin.toFixed(2)),
+      reason: `Highest-margin complement fitting ₹${headroom.toFixed(2)} headroom.`,
+    } : null,
+    message: pick ? `Pack ${pick.name} (₹${pick.total.toFixed(2)}) into ₹${headroom.toFixed(2)} headroom.` : 'No complement fits the remaining headroom — hold the anchor.',
+  });
+});
+
+// --- Growth funnel (measured revenue proof for the pitch) ---
+app.get('/api/growth/funnel', authMiddleware, async (req, res) => {
+  const [suggested, accepted, paid, revenue] = await Promise.all([
+    query(`SELECT COUNT(*)::int AS c FROM audit_logs WHERE user_id = $1 AND action IN ('campaign_converted','upsell_suggested','campaign_launched')`, [req.user.id]),
+    query(`SELECT COALESCE(SUM(accepted),0)::int AS c FROM campaigns WHERE user_id = $1`, [req.user.id]),
+    query(`SELECT COALESCE(SUM(paid),0)::int AS c FROM campaigns WHERE user_id = $1`, [req.user.id]),
+    query(`SELECT COALESCE(SUM(grand_total),0)::float AS s FROM invoices WHERE user_id = $1 AND status = 'paid' AND is_ai_upsell = TRUE`, [req.user.id]),
+  ]);
+  const s = suggested.rows[0]?.c || 0;
+  const a = accepted.rows[0]?.c || 0;
+  const p = paid.rows[0]?.c || 0;
+  res.json({
+    suggested: s, accepted: a, paid: p,
+    ai_upsell_revenue_inr: revenue.rows[0]?.s || 0,
+    accept_rate: s ? Number((a / s).toFixed(3)) : null,
+    convert_rate: a ? Number((p / a).toFixed(3)) : null,
+  });
 });
 
 app.post('/api/agent/verify', authMiddleware, async (req, res) => {
@@ -2142,6 +2295,16 @@ app.post('/api/llm/invoke', authMiddleware, async (req, res) => {
 
 // --- Conversational AI Checkout Agent (Tier 2) ---
 app.post('/api/agent/chat', authMiddleware, async (req, res) => {
+  if (await getOpsFlag('llm_disabled')) {
+    return res.status(503).json({
+      error: 'agent_ai_disabled',
+      message: 'The autonomous agent is halted by the ops kill-switch (llm_disabled). Manual catalog ordering is enabled.',
+      demo_mode: true,
+      fallback_mode: true,
+      catalog: AGENT_CATALOG.catalog,
+      bundles: AGENT_CATALOG.bundles,
+    });
+  }
   const { messages } = req.body;
 
   const tools = [
@@ -2376,6 +2539,12 @@ function parseInvoice(row) {
   if (!row) return null;
   return {
     ...row,
+    // node-postgres returns NUMERIC(12,2) as strings — coerce at the boundary
+    // so every consumer can do arithmetic without string-concat NaN bugs.
+    subtotal: row.subtotal == null ? 0 : Number(row.subtotal),
+    tax_total: row.tax_total == null ? 0 : Number(row.tax_total),
+    grand_total: row.grand_total == null ? 0 : Number(row.grand_total),
+    compliance_score: row.compliance_score == null ? row.compliance_score : Number(row.compliance_score),
     line_items: safeJson(row.line_items, []),
     ai_suggestions: safeJson(row.ai_suggestions, []),
     milestones: safeJson(row.milestones, []),

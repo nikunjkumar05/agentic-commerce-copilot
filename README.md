@@ -53,7 +53,7 @@ To standardize how AI agents transact on Indian rails, we are open-sourcing a dr
 5. **Trigger the Block:** Type *"Generate an invoice for ₹1,00,000 and pay it"*. The Agent gets mathematically blocked by the backend and escalates to human review — the block is written to the audit ledger.
 6. **Trigger the Settle:** Type *"Generate an invoice for ₹5,000 and pay it"*.
    * **Without a mandate token:** the Agent escalates to a real Razorpay **Payment Link** (a live `plink_...` URL you can open and pay) — honest human-in-the-loop handoff.
-   * **With a mandate token** (one-time setup: pay any checkout once in test mode, save the `token` + `customer_id` into `.env` as `RAZORPAY_AGENT_TOKEN` / `RAZORPAY_AGENT_CUSTOMER_ID`): the Agent charges **fully autonomously, S2S**, and returns a real **`pay_...`** ID verified as `captured` by Razorpay — no UI involved.
+    * **With a mandate token** (per-user, via the CFO Portal in **Settings → Razorpay Mandate**: complete one test-mode checkout, then bind the returned `customer_id` + `token` with `POST /api/user/razorpay-mandate` — no shared env token exists by design): the Agent charges **fully autonomously, S2S**, and returns a real **`pay_...`** ID verified as `captured` by Razorpay — no UI involved.
 
 ### Cryptographic ledger demo
 7. Open the **Audit Trail** page → click **Verify Integrity** → *"Chain Validated"*.

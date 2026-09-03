@@ -75,7 +75,7 @@ export default function BuyerOrders() {
                   <div className="p-4 md:p-6 bg-gray-50 flex md:flex-col items-center md:items-end justify-between md:justify-center md:w-48 shrink-0 border-t md:border-t-0 md:border-l border-gray-100">
                     <span className="text-sm text-gray-500 font-medium">Total Amount</span>
                     <span className="text-xl font-bold text-gray-900 flex items-center">
-                      ₹{(order.grand_total || 0).toLocaleString('en-IN')}
+                      ₹{(Number(order.grand_total) || 0).toLocaleString('en-IN')}
                     </span>
                   </div>
                 </div>

@@ -3,7 +3,13 @@ import fs from 'fs';
 import path from 'path';
 import jwt from 'jsonwebtoken';
 
-const API_BASE = 'http://localhost:3001/api/agent/v1';
+const API_BASE = process.env.EVAL_API_BASE
+  ? `${process.env.EVAL_API_BASE}/api/agent/v1`
+  : 'http://localhost:3001/api/agent/v1';
+// NOTE: the buyer is a FOREIGN agent — no app account, no cookies. Any JWT whose
+// signature matches the server's JWT_SECRET is accepted as a distinct buyer
+// identity (the invoice is booked in the merchant's books, recipient = buyer).
+// Settle without a bound mandate -> HTTP 402 + real Payment Link (graceful).
 
 // Mint a test JWT token for the buyer agent
 const token = jwt.sign(

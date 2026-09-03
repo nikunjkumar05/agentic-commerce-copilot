@@ -1,0 +1,141 @@
+{
+  "started_at": "2026-09-03T22:27:58.531Z",
+  "offline": [
+    {
+      "name": "hmac_accepts genuine signature",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "hmac_rejects forged signature",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "hmac_rejects missing signature",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "hmac_fail_closed without secret",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "checkout_sig_accepts genuine",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "checkout_sig_rejects cross-order replay",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "inter-state yields pure IGST",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "intra-state splits CGST+SGST conserving total",
+      "pass": true,
+      "detail": "cgst=900 sgst=900"
+    },
+    {
+      "name": "odd-paise rounding still conserves",
+      "pass": true,
+      "detail": "cgst=9 sgst=9.18"
+    },
+    {
+      "name": "missing GSTIN defaults intra-state (fail-safe, never IGST by guess)",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "ledger_canonical: \"5000.00\" hashes as 5000",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "ledger_canonical: 0 and null hash identically (legacy || semantics)",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "ledger_canonical: distinct amounts hash distinctly",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "webhook_idempotency_key deterministic",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "webhook_idempotency_key separates events",
+      "pass": true,
+      "detail": null
+    }
+  ],
+  "live": [
+    {
+      "name": "adversarial invalid-sku \"nope\" blocked",
+      "pass": true,
+      "detail": "got 400"
+    },
+    {
+      "name": "adversarial invalid-sku \"PROD_X\" blocked",
+      "pass": true,
+      "detail": "got 400"
+    },
+    {
+      "name": "adversarial invalid-sku \"\" blocked",
+      "pass": true,
+      "detail": "got 400"
+    },
+    {
+      "name": "adversarial invalid-sku \"prod_it_license \" blocked",
+      "pass": true,
+      "detail": "got 400"
+    },
+    {
+      "name": "adversarial invalid-sku \"null\" blocked",
+      "pass": true,
+      "detail": "got 400"
+    },
+    {
+      "name": "valid catalog fetch allowed",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "valid mandate issuance allowed",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "valid funnel read allowed",
+      "pass": true,
+      "detail": null
+    }
+  ],
+  "skipped": [
+    {
+      "name": "adversarial below-floor quote",
+      "reason": "products table is empty — seed a product, then re-run"
+    },
+    {
+      "name": "valid pack-bundle",
+      "reason": "products table is empty — seed a product, then re-run"
+    }
+  ],
+  "skipped_live": false,
+  "summary": {
+    "total": 23,
+    "passed": 23,
+    "adversarial_blocked": 5,
+    "adversarial_total": 5,
+    "false_blocks": 0,
+    "pass": true
+  }
+}

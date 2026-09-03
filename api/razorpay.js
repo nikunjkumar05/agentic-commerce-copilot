@@ -161,32 +161,34 @@ if (_split && _split.mode) {
  * True Autonomous S2S Settlement.
  *
  * Two real Razorpay modes (test & live compatible):
- *  1. SAVED TOKEN (preferred): charges the saved card token via
- *     POST /v1/payments/create/recurring — a genuine mandate payment with no UI.
+ *  1. SAVED TOKEN (per-user vault only): charges the buyer's own saved card
+ *     token via POST /v1/payments/create/recurring — a genuine mandate payment
+ *     with no UI. The token must come from the caller's DB row
+ *     (`users.razorpay_token_id`); there is deliberately NO global env fallback,
+ *     so one merchant's mandate can never settle another merchant's invoice.
  *  2. NO TOKEN: creates a real Razorpay Payment Link and returns it so a human
  *     can complete checkout (this is the graceful escalation path).
  *
  * @param {string} orderId - Razorpay order id (order_xxx)
  * @param {number} amount  - Amount in INR
- * @param {string} token   - Optional saved payment token (mandate)
- * @returns {{ mode: 'mandate_captured'|'payment_link', payment?: object, paymentLink?: object }}
+ * @param {string} token   - Per-user saved payment token (mandate), or null
+ * @returns {{ mode: 'mandate_captured'|'payment_link', via: string, payment?: object, paymentLink?: object }}
  */
 export async function captureAutonomousPayment(orderId, amount, token = null, customerId = null) {
   requireRazorpayConfig();
   const totalPaise = Math.round(amount * 100);
-  const finalToken = token || process.env.RAZORPAY_AGENT_TOKEN;
-  const finalCustomerId = customerId || process.env.RAZORPAY_AGENT_CUSTOMER_ID;
+  const via = 'per_user_vault';
 
-  // --- Mode 1: Autonomous mandate charge with a saved token ---
-  if (finalToken && finalCustomerId) {
+  // --- Mode 1: Autonomous mandate charge with the buyer's own saved token ---
+  if (token && customerId) {
     const payment = await s2sRequest('payments/create/recurring', {
       email: S2S_CREDENTIALS.email,
       contact: S2S_CREDENTIALS.contact,
       amount: totalPaise,
       currency: 'INR',
       order_id: orderId,
-      customer_id: finalCustomerId,
-      token: finalToken,
+      customer_id: customerId,
+      token: token,
       description: 'Agentic Autonomous Checkout',
     });
 
@@ -206,7 +208,7 @@ export async function captureAutonomousPayment(orderId, amount, token = null, cu
       throw err;
     }
 
-    return { mode: 'mandate_captured', payment: verified };
+    return { mode: 'mandate_captured', payment: verified, via };
   }
 
   // --- Mode 2: Real Payment Link (human escalation, no saved token yet) ---
@@ -220,7 +222,7 @@ export async function captureAutonomousPayment(orderId, amount, token = null, cu
     notify: { sms: false, email: false },
   });
 
-  return { mode: 'payment_link', paymentLink };
+  return { mode: 'payment_link', paymentLink, via: 'human_escalation' };
 }
 
 /** Minimal Razorpay REST caller for endpoints the SDK does not expose. */

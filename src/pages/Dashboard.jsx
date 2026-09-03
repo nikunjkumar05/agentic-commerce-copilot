@@ -49,16 +49,18 @@ export default function Dashboard() {
     ? invoices
     : invoices.filter(inv => inv.status === filter);
 
-  const totalValue = invoices.reduce((sum, inv) => sum + (inv.grand_total || 0), 0);
+  // NOTE: grand_total may arrive as a string (NUMERIC columns) — Number() first,
+  // otherwise `0 + "125.00"` concatenates and the total renders as NaN.
+  const totalValue = invoices.reduce((sum, inv) => sum + (Number(inv.grand_total) || 0), 0);
   const pendingCount = invoices.filter(i => ['draft', 'validated'].includes(i.status)).length;
   
   // Track AI Revenue Lift — only PAID invoices count as revenue (a draft or
   // anomaly invoice is not money earned). Agent-settled = paid via Razorpay
   // agent/webhook rails (payment_method set by the settlement endpoints).
   const paidInvoices = invoices.filter(i => i.status === 'paid');
-  const aiRevenue = paidInvoices.filter(i => i.is_ai_upsell).reduce((sum, inv) => sum + (inv.grand_total || 0), 0);
+  const aiRevenue = paidInvoices.filter(i => i.is_ai_upsell).reduce((sum, inv) => sum + (Number(inv.grand_total) || 0), 0);
   const agentSettledCount = paidInvoices.filter(i => (i.payment_method || '').startsWith('razorpay')).length;
-  const paidValue = paidInvoices.reduce((sum, inv) => sum + (inv.grand_total || 0), 0);
+  const paidValue = paidInvoices.reduce((sum, inv) => sum + (Number(inv.grand_total) || 0), 0);
   const aiRevenuePercentage = paidValue > 0 ? Math.round((aiRevenue / paidValue) * 100) : 0;
   // Funnel stages: the agent SUGGESTED (audit trail), the buyer ACCEPTED (invoice
   // exists with is_ai_upsell), and money was COLLECTED (that invoice is paid).
@@ -135,7 +137,7 @@ export default function Dashboard() {
         <motion.div variants={fadeUp} className="grid grid-cols-2 md:grid-cols-3 gap-4">
           <MetricCard icon={Megaphone} label="Campaigns" value={campaigns.length} sublabel="Active + historical" variant="default" />
           <MetricCard icon={FileText} label="Campaigns Sent" value={campaignSent} sublabel={`${campaignAccepted} accepted`} variant="info" />
-          <MetricCard icon={IndianRupee} label="Campaign Revenue" value={`₹${(paidInvoices.filter(i => i.campaign_id).reduce((s, i) => s + (i.grand_total || 0), 0) / 1000).toFixed(1)}k`} sublabel={`${campaignPaid} paid · ${campaignConversion}% conversion`} variant="success" />
+          <MetricCard icon={IndianRupee} label="Campaign Revenue" value={`₹${(paidInvoices.filter(i => i.campaign_id).reduce((s, i) => s + (Number(i.grand_total) || 0), 0) / 1000).toFixed(1)}k`} sublabel={`${campaignPaid} paid · ${campaignConversion}% conversion`} variant="success" />
         </motion.div>
       )}
 
