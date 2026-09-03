@@ -56,7 +56,7 @@ export default function InvoiceListItem({ invoice }) {
         </p>
       </div>
       <div className="text-right shrink-0">
-        <p className="text-sm font-bold font-heading">{formatCurrency(invoice.grand_total, invoice.currency)}</p>
+        <p className="text-sm font-bold font-mono">{formatCurrency(invoice.grand_total, invoice.currency)}</p>
       </div>
       <ChevronRight className="w-4 h-4 text-muted-foreground/30 group-hover:text-accent transition-colors shrink-0" />
     </Link>

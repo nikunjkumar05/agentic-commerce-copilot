@@ -1,4 +1,5 @@
 import { db } from '@/services/db';
+import { useAuth } from '@/lib/AuthContext';
 
 import { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
@@ -12,7 +13,6 @@ import { Skeleton } from '@/components/ui/skeleton';
 import InvoicePreview from '@/components/invoice/InvoicePreview';
 import InvoiceForm from '@/components/invoice/InvoiceForm';
 import ValidationPanel from '@/components/invoice/ValidationPanel';
-import { generateCID } from '@/lib/invoiceHelpers';
 import { useRef } from 'react';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
@@ -27,6 +27,7 @@ export default function InvoiceDetail() {
   const [editedInvoice, setEditedInvoice] = useState(null);
   const [isStoring, setIsStoring] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
   const previewRef = useRef(null);
 
@@ -93,24 +94,36 @@ export default function InvoiceDetail() {
 
   const handleValidate = async () => {
     setIsValidating(true);
-    const result = await db.integrations.Core.InvokeLLM({
-      prompt: `Validate this government invoice for compliance: ${JSON.stringify(invoice)}. Check GST, calculations, missing fields, anomalies. Return score 0-100 and issues.`,
-      response_json_schema: {
-        type: "object",
-        properties: {
-          passed: { type: "boolean" },
-          score: { type: "number" },
-          issues: { type: "array", items: { type: "object", properties: { field: { type: "string" }, severity: { type: "string" }, issue: { type: "string" }, suggestion: { type: "string" } } } }
+    try {
+      const result = await db.integrations.Core.InvokeLLM({
+        prompt: `Validate this B2B commerce invoice for compliance: ${JSON.stringify(invoice)}. Check GST, calculations, missing fields, anomalies. Return score 0-100 and issues.`,
+        response_json_schema: {
+          type: "object",
+          properties: {
+            passed: { type: "boolean" },
+            score: { type: "number" },
+            issues: { type: "array", items: { type: "object", properties: { field: { type: "string" }, severity: { type: "string" }, issue: { type: "string" }, suggestion: { type: "string" } } } }
+          }
         }
-      }
-    });
-    await db.entities.Invoice.update(id, {
-      compliance_score: result.score,
-      ai_suggestions: result.issues || [],
-      status: result.passed ? 'validated' : 'anomaly',
-    });
-    queryClient.invalidateQueries({ queryKey: ['invoice', id] });
-    setIsValidating(false);
+      });
+      setIsDemoMode(!!result.demo_mode);
+      await db.entities.Invoice.update(id, {
+        compliance_score: result.score,
+        ai_suggestions: result.issues || [],
+        status: (result.score ?? (result.passed ? 90 : 0)) >= 85 ? 'validated' : 'anomaly',
+      });
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] });
+    } catch (err) {
+      // FAIL LOUD: never mark the invoice validated when the validator is down.
+      // The backend now returns a real 503/502 (no canned "passed") when AI is
+      // unconfigured/unavailable, so surface the exact reason instead of letting
+      // the button spin forever or silently passing.
+      console.error('Validation failed:', err);
+      const reason = err?.response?.data?.message || err?.message || 'unknown error';
+      toast.error(`Validation unavailable: ${reason}`, { duration: 6000 });
+    } finally {
+      setIsValidating(false);
+    }
   };
 
   const handlePrint = () => window.print();
@@ -147,11 +160,13 @@ export default function InvoiceDetail() {
 
   const displayInvoice = isEditing ? editedInvoice : invoice;
 
+  const { user } = useAuth();
+  
   return (
     <div className="pb-24">
       {/* Header */}
       <div className="px-4 pt-3 pb-1 flex items-center gap-2">
-        <Link to="/"><Button variant="ghost" size="icon" className="h-8 w-8 rounded-xl hover:bg-muted/80"><ArrowLeft className="w-4 h-4" /></Button></Link>
+        <Link to={user?.role === 'buyer' ? '/buyer/orders' : '/merchant'}><Button variant="ghost" size="icon" className="h-8 w-8 rounded-xl hover:bg-muted/80"><ArrowLeft className="w-4 h-4" /></Button></Link>
         <div className="flex-1 min-w-0">
           <h2 className="text-sm font-heading font-bold truncate">{invoice.invoice_number}</h2>
           <p className="text-[10px] text-muted-foreground font-medium">{invoice.recipient_name}</p>
@@ -235,6 +250,7 @@ export default function InvoiceDetail() {
             <ValidationPanel
               score={invoice.compliance_score}
               suggestions={invoice.ai_suggestions}
+              demoMode={isDemoMode}
               isValidating={isValidating}
             />
           </TabsContent>

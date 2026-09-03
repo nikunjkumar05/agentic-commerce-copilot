@@ -1,6 +1,6 @@
 import { db } from '@/services/db';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
@@ -9,10 +9,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
-import { Building2, Key, Wallet, Bot, Database as DatabaseIcon, Info, Shield, LogOut, Trash2, Download, Upload, ArrowRight } from 'lucide-react';
-import { format } from 'date-fns';
+import { Building2, Wallet, Bot, Database as DatabaseIcon, Info, Shield, LogOut, Download, ArrowRight } from 'lucide-react';
 
 export default function SettingsPage() {
   const navigate = useNavigate();
@@ -34,6 +32,9 @@ export default function SettingsPage() {
   });
 
   const delegationMax = userProfile?.agent_delegation_max || 0;
+  const dailyLimit = userProfile?.agent_daily_limit || 0;
+  const dailySpent = userProfile?.agent_daily_spent || 0;
+  const hasMandate = Boolean(userProfile?.razorpay_token_id);
 
   const { data: invoices = [] } = useQuery({
     queryKey: ['invoices'],
@@ -113,15 +114,19 @@ export default function SettingsPage() {
         <CardContent className="space-y-3">
           <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 flex items-start gap-2">
             <Info className="w-4 h-4 text-yellow-600 mt-0.5 shrink-0" />
-            <p className="text-xs text-yellow-700">Demo Mode: All blockchain interactions are simulated on Optimism Sepolia testnet.</p>
+            <p className="text-xs text-yellow-700">
+              Not connected: this build has no blockchain integration. Payments settle via
+              Razorpay (test mode) or a manually recorded bank transfer — no on-chain
+              transaction is created, and no wallet or token contract is deployed.
+            </p>
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Network</span>
-            <Badge variant="outline" className="text-[10px] font-mono">Optimism Sepolia</Badge>
+            <Badge variant="outline" className="text-[10px] font-mono">Not connected</Badge>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">PPT Token</span>
-            <Badge variant="outline" className="text-[10px] font-mono">ERC-20</Badge>
+            <span className="text-muted-foreground">Token contract</span>
+            <Badge variant="outline" className="text-[10px] font-mono">Not deployed</Badge>
           </div>
         </CardContent>
       </Card>
@@ -132,18 +137,131 @@ export default function SettingsPage() {
           <CardTitle className="text-sm flex items-center gap-2"><Bot className="w-4 h-4" /> Agent Delegation</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          {delegationMax > 0 ? (
-            <>
-              <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 space-y-1.5 text-xs text-purple-700">
+          <div className="space-y-3">
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <Label className="text-xs">Max Per-Transaction Limit (₹)</Label>
+                <Input
+                  type="number"
+                  defaultValue={delegationMax}
+                  id="delegationInput"
+                  className="mt-1 h-9 text-sm"
+                  placeholder="e.g. 10000"
+                />
+              </div>
+              <Button size="sm" onClick={async () => {
+                const val = parseFloat(document.getElementById('delegationInput').value) || 0;
+                try {
+                  await fetch('/api/user/delegation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('app_access_token')}` },
+                    body: JSON.stringify({ maxAmount: val })
+                  });
+                  await refetchProfile();
+                  toast.success(`Per-transaction cap updated to ₹${val}`);
+                } catch(e) {
+                  toast.error('Failed to update limit');
+                }
+              }}>Save</Button>
+            </div>
+
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <Label className="text-xs">Daily Autonomous Spend Limit (₹)</Label>
+                <Input
+                  type="number"
+                  defaultValue={dailyLimit}
+                  id="dailyLimitInput"
+                  className="mt-1 h-9 text-sm"
+                  placeholder="e.g. 50000"
+                />
+              </div>
+              <Button size="sm" variant="outline" onClick={async () => {
+                const val = parseFloat(document.getElementById('dailyLimitInput').value) || 0;
+                try {
+                  await fetch('/api/user/delegation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('app_access_token')}` },
+                    body: JSON.stringify({ maxAmount: delegationMax, dailyLimit: val })
+                  });
+                  await refetchProfile();
+                  toast.success(`Daily limit updated to ₹${val}`);
+                } catch(e) {
+                  toast.error('Failed to update daily limit');
+                }
+              }}>Save</Button>
+            </div>
+
+            {dailyLimit > 0 && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
+                  <span>Today: ₹{dailySpent.toLocaleString('en-IN')} spent</span>
+                  <span>of ₹{dailyLimit.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="h-2 bg-muted rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all ${dailySpent / dailyLimit > 0.8 ? 'bg-red-500' : 'bg-green-500'}`}
+                    style={{ width: `${Math.min(100, (dailySpent / dailyLimit) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {delegationMax > 0 && (
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 space-y-1.5 text-xs text-blue-700">
                 <div className="flex items-center gap-1.5 font-semibold"><Shield className="w-3.5 h-3.5" /> Active Delegation</div>
-                <p>Max Vault Limit: ₹{delegationMax.toLocaleString()}</p>
+                <p>Per-transaction cap: ₹{delegationMax.toLocaleString('en-IN')}</p>
+                <p>Daily cap: ₹{Number(dailyLimit || 0).toLocaleString('en-IN')}</p>
                 <p>Enforced by: Secure Backend DB</p>
               </div>
-              <Button variant="destructive" size="sm" className="text-xs" onClick={revokeDelegation}>Revoke Delegation</Button>
-            </>
-          ) : (
-            <p className="text-xs text-muted-foreground">No active delegation. Set up from the payment page.</p>
-          )}
+            )}
+
+            <div className="flex gap-2 pt-2">
+              <Button variant="outline" size="sm" className="text-xs flex-1" onClick={async () => {
+                const customerId = prompt('Razorpay Customer ID (cust_…) from a test-mode checkout:');
+                const tokenId = prompt('Razorpay Token ID (token_…) for the saved card:');
+                if (!customerId || !tokenId) {
+                  toast.error('Both customer_id and token_id are required.');
+                  return;
+                }
+                try {
+                  const res = await fetch('/api/user/razorpay-mandate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('app_access_token')}` },
+                    body: JSON.stringify({ razorpay_customer_id: customerId, razorpay_token_id: tokenId })
+                  });
+                  if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.message || 'Binding failed');
+                  }
+                  await refetchProfile();
+                  toast.success('Mandate bound. Autonomous S2S now armed.');
+                } catch (e) {
+                  toast.error(e.message || 'Failed to bind mandate');
+                }
+              }}>
+                {hasMandate ? 'Re-bind Mandate' : 'Bind Razorpay Mandate'}
+              </Button>
+              {hasMandate && (
+                <Button variant="ghost" size="sm" className="text-xs" onClick={async () => {
+                  if (!confirm('Revoke the bound Razorpay mandate token?')) return;
+                  try {
+                    await fetch('/api/user/razorpay-mandate', {
+                      method: 'DELETE',
+                      headers: { Authorization: `Bearer ${localStorage.getItem('app_access_token')}` }
+                    });
+                    await refetchProfile();
+                    toast.success('Mandate revoked.');
+                  } catch (e) {
+                    toast.error('Failed to revoke mandate');
+                  }
+                }}>Revoke Mandate</Button>
+              )}
+              {delegationMax > 0 && (
+                <Button variant="destructive" size="sm" className="text-xs" onClick={revokeDelegation}>Revoke Cap</Button>
+              )}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -180,7 +298,7 @@ export default function SettingsPage() {
           <CardTitle className="text-sm">About</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-xs text-muted-foreground">
-          <p className="font-semibold text-foreground">GovtInvoice Co-Pilot v1.0</p>
+          <p className="font-semibold text-foreground">AgentPay Gateway v1.0</p>
           <p>Nikunj × RazorPay | Agentic Web3 Billing System</p>
           <p>AI-powered invoice generation, validation, decentralized storage, and agentic payments.</p>
         </CardContent>

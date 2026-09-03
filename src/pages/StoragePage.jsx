@@ -4,7 +4,6 @@ import { useQuery } from '@tanstack/react-query';
 
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Database, ExternalLink, FileText, HardDrive, Link2 } from 'lucide-react';
 import { Link as RouterLink } from 'react-router-dom';
@@ -19,7 +18,21 @@ export default function StoragePage() {
   });
 
   const storedInvoices = invoices.filter(inv => inv.cid);
-  const totalSize = storedInvoices.length * 2.4; // Simulated KB
+
+  // HONEST SIZE: previously this was a fabricated constant (count * 2.4 KB).
+  // We cannot know the real IPFS-file size from DB metadata alone (Lighthouse
+  // returns a CID, not bytes). So we compute a real byte estimate from the
+  // actual stored invoice content (the JSON we uploaded) and label it as an
+  // estimate — never a fake exact number.
+  const approximateBytes = storedInvoices.reduce((sum, inv) => {
+    try {
+      return sum + Buffer.byteLength(JSON.stringify(inv), 'utf8');
+    } catch {
+      return sum;
+    }
+  }, 0);
+  // Round up to whole KB for display (approximate, honest).
+  const approximateKB = Math.max(1, Math.ceil(approximateBytes / 1024));
 
   return (
     <div className="p-4 max-w-2xl mx-auto space-y-6">
@@ -41,13 +54,13 @@ export default function StoragePage() {
         <Card>
           <CardContent className="p-3 text-center">
             <HardDrive className="w-5 h-5 mx-auto text-accent mb-1" />
-            <p className="text-lg font-bold">{totalSize.toFixed(1)} KB</p>
-            <p className="text-[10px] text-muted-foreground">Total Size</p>
+            <p className="text-lg font-bold">{storedInvoices.length ? `${approximateKB} KB*` : '—'}</p>
+            <p className="text-[10px] text-muted-foreground">*Approx. size</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-3 text-center">
-            <Link2 className="w-5 h-5 mx-auto text-purple-500 mb-1" />
+            <Link2 className="w-5 h-5 mx-auto text-blue-500 mb-1" />
             <p className="text-lg font-bold">{storedInvoices.filter(i => i.tx_hash).length}</p>
             <p className="text-[10px] text-muted-foreground">Active Deals</p>
           </CardContent>
@@ -62,7 +75,7 @@ export default function StoragePage() {
           <div className="text-center py-16">
             <Database className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
             <p className="text-sm font-medium text-muted-foreground">No invoices stored on IPFS yet</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">Store an invoice from the detail page</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">Store an invoice from the detail page — exact IPFS size isn't shown (Lighthouse returns a CID, not bytes)</p>
           </div>
         ) : (
           storedInvoices.map(inv => (
@@ -71,15 +84,15 @@ export default function StoragePage() {
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <div className="w-9 h-9 rounded-xl bg-purple-100 flex items-center justify-center">
-                        <FileText className="w-4 h-4 text-purple-600" />
+                      <div className="w-9 h-9 rounded-xl bg-blue-100 flex items-center justify-center">
+                        <FileText className="w-4 h-4 text-blue-600" />
                       </div>
                       <div>
                         <p className="text-sm font-semibold">{inv.invoice_number}</p>
                         <p className="text-xs text-muted-foreground">{inv.recipient_name}</p>
                       </div>
                     </div>
-                    <Badge className={cn("text-[10px]", inv.tx_hash ? 'bg-green-100 text-green-700' : 'bg-purple-100 text-purple-700')}>
+                    <Badge className={cn("text-[10px]", inv.tx_hash ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700')}>
                       {inv.tx_hash ? 'Active Deal' : 'Stored'}
                     </Badge>
                   </div>

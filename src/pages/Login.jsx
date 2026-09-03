@@ -1,16 +1,21 @@
 import { db } from '@/services/db';
-
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
-
+import { Link, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { LogIn, Mail, Lock, Loader2 } from "lucide-react";
+import { LogIn, Mail, Lock, Loader2, Store, User } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import AuthLayout from "@/components/AuthLayout";
 import GoogleIcon from "@/components/GoogleIcon";
 
 export default function Login() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const role = searchParams.get('role') || 'merchant';
+  
+  const setRole = (newRole) => {
+    setSearchParams({ role: newRole });
+  };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -21,7 +26,7 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      await db.auth.loginViaEmailPassword(email, password);
+      await db.auth.loginViaEmailPassword(email, password, role);
       window.location.href = "/";
     } catch (err) {
       setError(err.message || "Invalid email or password");
@@ -34,20 +39,30 @@ export default function Login() {
     db.auth.loginWithProvider("google", "/");
   };
 
+  const RoleIcon = role === 'buyer' ? User : Store;
+  const roleTitle = role === 'buyer' ? 'Buyer Login' : 'Merchant Login';
+
   return (
     <AuthLayout
-      icon={LogIn}
-      title="Welcome back"
-      subtitle="Log in to your account"
+      icon={RoleIcon}
+      title={roleTitle}
+      subtitle={`Log in to your ${role} account`}
       footer={
         <>
           Don't have an account?{" "}
-          <Link to="/register" className="text-accent font-medium hover:underline">
+          <Link to={`/register?role=${role}`} className="text-accent font-medium hover:underline">
             Create one
           </Link>
         </>
       }
     >
+      <Tabs value={role} onValueChange={setRole} className="w-full mb-6">
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="merchant" className="flex items-center gap-2"><Store className="w-4 h-4" /> Merchant</TabsTrigger>
+          <TabsTrigger value="buyer" className="flex items-center gap-2"><User className="w-4 h-4" /> Buyer</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
       <Button
         variant="outline"
         className="w-full h-12 text-sm font-medium mb-6 border-muted-foreground/20 hover:bg-muted/50"

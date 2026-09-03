@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Bot, Terminal, Server, Zap, CheckCircle2, Loader2, ArrowRightLeft, ShieldCheck, Play } from 'lucide-react';
-import { Link } from 'react-router-dom';
 
 export default function SimulationTheater() {
   const [step, setStep] = useState(0);
@@ -45,16 +44,16 @@ export default function SimulationTheater() {
       {/* Header */}
       <div className="px-6 py-4 border-b bg-card z-10 shadow-sm flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center">
-            <ArrowRightLeft className="w-5 h-5 text-purple-500" />
+          <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
+            <ArrowRightLeft className="w-5 h-5 text-blue-500" />
           </div>
           <div>
             <h2 className="text-lg font-bold font-heading leading-tight">B2B Agent Simulation</h2>
-            <p className="text-xs text-muted-foreground">Live Agent-to-Agent Commerce Demo</p>
+            <p className="text-xs text-muted-foreground">Scripted demo — no real API calls are made</p>
           </div>
         </div>
         {!isRunning && step === 0 ? (
-          <Button onClick={startSimulation} className="bg-purple-600 hover:bg-purple-700 text-white gap-2">
+          <Button onClick={startSimulation} className="bg-blue-600 hover:bg-blue-700 text-white gap-2">
             <Play className="w-4 h-4" /> Start Demo
           </Button>
         ) : (
@@ -79,7 +78,7 @@ export default function SimulationTheater() {
             
             {step >= 1 && (
               <div className="animate-in fade-in slide-in-from-left-2">
-                <span className="text-blue-400">&gt; [API GET]</span> Requesting /catalog.json from GovtInvoice Co-Pilot...<br/>
+                <span className="text-blue-400">&gt; [API GET]</span> Requesting /catalog.json from AgentPay Gateway...<br/>
                 <span className="text-slate-400 pl-4">HTTP 200 OK - Found 3 items.</span>
               </div>
             )}
@@ -95,25 +94,28 @@ export default function SimulationTheater() {
 
             {step >= 5 && (
               <div className="animate-in fade-in slide-in-from-left-2 text-yellow-400">
-                <span className="text-yellow-400">&gt; [API RESP]</span> Received Invoice INV-99382 for ₹5000.<br/>
-                <span className="text-blue-400">&gt; [DECISION]</span> Verifying Razorpay Order payload... Valid.<br/>
-                <span className="text-blue-400">&gt; [EXECUTE]</span> Generating cryptographic signature for payment...
+                <span className="text-blue-400">&gt; [API GET]</span> Requesting /catalog.json from AgentPay Gateway...<br/>
+                <span className="text-muted-foreground">&gt; [CATALOG] 6 machine-readable products discovered</span><br/>
+                <span className="text-yellow-400">&gt; [HTTP 402]</span> Merchant Agent challenged: Payment Required (order_... / inv_...)<br/>
+                <span className="text-primary">&gt; [DELEGATION CHECK]</span> Requested amount under budget. Auto-approving...<br/>
+                <span className="text-green-400">&gt; [RAZORPAY S2S]</span> Mandate charged. Verified: status=captured.<br/>
+                <span className="text-green-500 font-bold">&gt; [SETTLED]</span> Machine transaction complete. Double-entry SHA-256 logged.
               </div>
             )}
 
             {step >= 7 && (
               <div className="animate-in fade-in slide-in-from-left-2 mt-4 p-3 bg-green-500/10 border border-green-500/30 rounded text-green-300">
-                &gt; [SUCCESS] Payment settled autonomously. Transaction closed.
+                &gt; [DEMO COMPLETE] Script finished — no real payment was processed.
               </div>
             )}
           </div>
         </div>
 
-        {/* Right Side: GovtInvoice Merchant AI */}
+        {/* Right Side: Agentic Commerce Merchant AI */}
         <div className="flex-1 rounded-2xl bg-card border flex flex-col overflow-hidden relative shadow-2xl">
           <div className="bg-muted/50 px-4 py-2 border-b flex items-center gap-2">
-            <Bot className="w-4 h-4 text-primary" />
-            <span className="text-xs font-heading font-bold text-foreground">GOVT_INVOICE_CO_PILOT (SELLER)</span>
+            <Building2 className="w-4 h-4 text-primary" />
+            <span className="text-xs font-heading font-bold text-foreground">AGENTIC_COMMERCE_CO_PILOT (SELLER)</span>
           </div>
           <div className="flex-1 p-4 text-sm space-y-4 overflow-y-auto">
             <div className="text-muted-foreground text-xs flex items-center gap-2">
@@ -148,11 +150,11 @@ export default function SimulationTheater() {
             )}
 
             {step >= 6 && (
-              <div className="animate-in fade-in slide-in-from-right-2 bg-purple-500/10 p-3 rounded-lg border border-purple-500/30">
-                <div className="flex items-center gap-2 font-bold text-purple-700 dark:text-purple-300 mb-1">
+              <div className="animate-in fade-in slide-in-from-right-2 bg-blue-500/10 p-3 rounded-lg border border-blue-500/30">
+                <div className="flex items-center gap-2 font-bold text-blue-700 dark:text-blue-300 mb-1">
                   <CheckCircle2 className="w-4 h-4" /> Signature Verified
                 </div>
-                <div className="text-xs space-y-1 text-purple-600/80 dark:text-purple-300/80">
+                <div className="text-xs space-y-1 text-blue-600/80 dark:text-blue-300/80">
                   <p>Verifying Razorpay Webhook Signature...</p>
                   <p>Updating Invoice INV-99382 status to PAID.</p>
                 </div>
@@ -163,7 +165,7 @@ export default function SimulationTheater() {
               <div className="animate-in zoom-in duration-500 mt-4 p-4 bg-green-500/10 border border-green-500/30 rounded-xl flex items-center justify-between">
                 <div>
                   <p className="font-bold text-green-700 dark:text-green-400">Trade Complete</p>
-                  <p className="text-xs text-green-600/80 dark:text-green-400/80">₹5,000 Settled via Razorpay Route</p>
+                  <p className="text-xs text-green-600/80 dark:text-green-400/80">₹5,000 simulated via Razorpay Route — demo only</p>
                 </div>
                 <CheckCircle2 className="w-8 h-8 text-green-500" />
               </div>

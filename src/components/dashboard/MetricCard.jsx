@@ -22,7 +22,7 @@ export default function MetricCard({ icon: Icon, label, value, sublabel, variant
         </div>
       </div>
       <div>
-        <p className="text-xl font-bold font-heading tracking-tight">{value}</p>
+        <p className="text-xl font-bold font-mono tracking-tight">{value}</p>
         <p className="text-[11px] text-muted-foreground font-medium mt-0.5">{label}</p>
         {sublabel && <p className="text-[10px] text-muted-foreground/60 mt-0.5">{sublabel}</p>}
       </div>

@@ -1,16 +1,19 @@
 import { db } from '@/services/db';
 
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { UserPlus, Mail, Lock, Loader2 } from "lucide-react";
+import { UserPlus, Mail, Lock, Loader2, Store } from "lucide-react";
 import AuthLayout from "@/components/AuthLayout";
 import GoogleIcon from "@/components/GoogleIcon";
 
 export default function Register() {
+  const [searchParams] = useSearchParams();
+  const role = searchParams.get('role') || 'merchant';
+  
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -26,8 +29,8 @@ export default function Register() {
     }
     setLoading(true);
     try {
-      await db.auth.register({ email, password });
-      const loginData = await db.auth.loginViaEmailPassword(email, password);
+      await db.auth.register({ email, password, role });
+      const loginData = await db.auth.loginViaEmailPassword(email, password, role);
       if (loginData?.access_token) {
         db.auth.setToken(loginData.access_token);
         window.location.href = "/";
@@ -43,15 +46,18 @@ export default function Register() {
     db.auth.loginWithProvider("google", "/");
   };
 
+  const RoleIcon = role === 'buyer' ? UserPlus : Store;
+  const roleTitle = role === 'buyer' ? 'Buyer Registration' : 'Merchant Registration';
+
   return (
     <AuthLayout
-      icon={UserPlus}
-      title="Create your account"
-      subtitle="Sign up to get started"
+      icon={RoleIcon}
+      title={roleTitle}
+      subtitle={`Create your ${role} account to get started`}
       footer={
         <>
           Already have an account?{" "}
-          <Link to="/login" className="text-primary font-medium hover:underline">
+          <Link to={`/login?role=${role}`} className="text-primary font-medium hover:underline">
             Log in
           </Link>
         </>

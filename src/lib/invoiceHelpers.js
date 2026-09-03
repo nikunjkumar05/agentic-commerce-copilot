@@ -56,18 +56,11 @@ export function numberToWords(num) {
   return result;
 }
 
-// Generate fake IPFS CID
-export function generateCID() {
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  let cid = 'Qm';
-  for (let i = 0; i < 44; i++) cid += chars[Math.floor(Math.random() * chars.length)];
-  return cid;
-}
-
-// Generate fake TX hash
-export function generateTxHash() {
-  const hex = '0123456789abcdef';
-  let hash = '0x';
-  for (let i = 0; i < 64; i++) hash += hex[Math.floor(Math.random() * hex.length)];
-  return hash;
-}
+// NOTE: Fakes deliberately REMOVED from this file.
+// generateCID() and generateTxHash() used to be here, returning random strings
+// that LOOKED like IPFS CIDs / EVM tx hashes but were meaningless. Any real CID
+// or tx hash must come from a REAL integration:
+//   - IPFS CIDs   → Lighthouse Web3 upload response (/api/ipfs/upload)
+//   - tx hashes   → Razorpay pay_... ids / verified NEON refund refs
+// No component imports them anymore; if you ever need a placeholder, prefer an
+// explicit empty string + an "unavailable" label over a fake-looking value.

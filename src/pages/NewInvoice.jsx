@@ -51,6 +51,7 @@ export default function NewInvoice() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
   const [complianceScore, setComplianceScore] = useState(null);
+  const [isDemoMode, setIsDemoMode] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const chatEndRef = useRef(null);
 
@@ -73,7 +74,7 @@ export default function NewInvoice() {
 
     try {
       const result = await db.integrations.Core.InvokeLLM({
-        prompt: `Generate a government invoice from this request: "${message}"
+        prompt: `Generate a B2B commerce invoice from this request: "${message}"
 
 Return ONLY a valid JSON object matching this exact schema:
 {
@@ -147,6 +148,7 @@ Rules:
       if (!result || !result.line_items) {
         throw new Error('Invalid response from AI');
       }
+      setIsDemoMode(!!result.demo_mode);
 
       const recalcSubtotal = result.line_items.reduce((sum, it) => sum + (Number(it.quantity ?? 0) * Number(it.unit_price ?? 0)), 0);
       const recalcTax = result.line_items.reduce((sum, it) => {
@@ -174,11 +176,14 @@ Rules:
       }]);
       setMode('form');
     } catch (err) {
+      // FAIL LOUD: surface the actual reason (e.g. MISTRAL_API_KEY missing)
+      // instead of a hidden, generic failure. No mocked data is injected here.
       console.error('Invoice generation failed:', err);
-      toast.error('Failed to generate invoice. Please try again.');
+      const reason = err?.response?.data?.message || err?.message || 'Unknown error';
+      toast.error(`Invoice generation unavailable: ${reason}`, { duration: 6000 });
       setChatMessages(prev => [...prev, {
         role: 'ai',
-        content: 'Sorry, I couldn\'t generate the invoice. Please try again.'
+        content: `Sorry, the AI couldn't generate the invoice right now. ${reason}`
       }]);
     } finally {
       setIsGenerating(false);
@@ -187,47 +192,57 @@ Rules:
 
   const handleValidate = async () => {
     setIsValidating(true);
-    const result = await db.integrations.Core.InvokeLLM({
-      prompt: `You are a government invoice compliance auditor for India. Validate this invoice:
+    try {
+      const result = await db.integrations.Core.InvokeLLM({
+        prompt: `You are a B2B commerce compliance auditor for India. Validate this invoice:
 ${JSON.stringify(invoice, null, 2)}
 
 Check for:
-1. GST number validity (format: 2 digits + 5 letters + 4 digits + 1 letter + 1 alphanumeric + Z + 1 alphanumeric)
-2. Tax calculation accuracy (subtotal + tax should equal grand_total)
-3. Missing mandatory fields for government procurement
+1. Incorrect GST calculations (Subtotal + (Subtotal * TaxRate/100) = Grand Total)
+2. Invalid GST numbers (must follow Indian 15-char format)
+3. Missing mandatory fields for enterprise procurement
 4. Unusually high/low amounts vs line item descriptions
 5. Date validity
+Return JSON with { score: 0-100, suggestions: [{ field, issue, suggestion, severity }] }
 
 Return your analysis.`,
-      response_json_schema: {
-        type: "object",
-        properties: {
-          passed: { type: "boolean" },
-          score: { type: "number" },
-          issues: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                field: { type: "string" },
-                severity: { type: "string" },
-                issue: { type: "string" },
-                suggestion: { type: "string" }
+        response_json_schema: {
+          type: "object",
+          properties: {
+            passed: { type: "boolean" },
+            score: { type: "number" },
+            issues: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  field: { type: "string" },
+                  severity: { type: "string" },
+                  issue: { type: "string" },
+                  suggestion: { type: "string" }
+                }
               }
             }
           }
         }
-      }
-    });
+      });
 
-    setComplianceScore(result.score);
-    setInvoice(prev => ({
-      ...prev,
-      ai_suggestions: result.issues || [],
-      compliance_score: result.score,
-      status: result.passed ? 'validated' : 'anomaly',
-    }));
-    setIsValidating(false);
+      setComplianceScore(result.score);
+      setIsDemoMode(!!result.demo_mode);
+      setInvoice(prev => ({
+        ...prev,
+        ai_suggestions: result.issues || [],
+        compliance_score: result.score,
+        status: (result.score ?? (result.passed ? 90 : 0)) >= 85 ? 'validated' : 'anomaly',
+      }));
+    } catch (err) {
+      // FAIL LOUD: never silently "pass" an invoice when the validator is down.
+      console.error('Invoice validation failed:', err);
+      const reason = err?.response?.data?.message || err?.message || 'Unknown error';
+      toast.error(`Validation unavailable: ${reason}`, { duration: 6000 });
+    } finally {
+      setIsValidating(false);
+    }
   };
 
   const handleSave = () => {
@@ -280,8 +295,8 @@ Return your analysis.`,
         <TabsContent value="chat" className="flex-1 flex flex-col min-h-0 mt-0">
           <div className="flex-1 overflow-y-auto px-4 space-y-3 pb-2">
             <div className="flex items-start gap-3 pt-2">
-              <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
-                <Brain className="w-4.5 h-4.5 text-accent" />
+              <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center overflow-hidden border border-border shrink-0">
+                <img src="/logo.png" alt="AgentPay" className="w-full h-full object-cover" />
               </div>
               <div className="bg-muted/60 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[85%]">
                 <p className="text-sm">Hi! I'm your AI Co-Pilot. Describe the invoice you need, and I'll generate it.</p>
@@ -292,8 +307,8 @@ Return your analysis.`,
             {chatMessages.map((msg, i) => (
               <div key={i} className={`flex items-start gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
                 {msg.role === 'ai' && (
-                  <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
-                    <Brain className="w-4.5 h-4.5 text-accent" />
+                  <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center overflow-hidden border border-border shrink-0">
+                    <img src="/logo.png" alt="AgentPay" className="w-full h-full object-cover" />
                   </div>
                 )}
                 <div className={`rounded-2xl px-4 py-3 max-w-[85%] text-sm ${
@@ -320,6 +335,7 @@ Return your analysis.`,
           <ValidationPanel
             score={complianceScore}
             suggestions={invoice.ai_suggestions}
+            demoMode={isDemoMode}
             isValidating={isValidating}
           />
           {complianceScore === null && !isValidating && (

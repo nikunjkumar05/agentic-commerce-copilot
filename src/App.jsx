@@ -1,4 +1,4 @@
-import { Toaster } from "@/components/ui/toaster"
+import { Toaster } from 'sonner';
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClientInstance } from '@/lib/query-client'
 import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
@@ -7,6 +7,8 @@ import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 import ProtectedRoute from '@/components/ProtectedRoute';
 
+import Campaigns from '@/pages/Campaigns';
+import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
 import Register from '@/pages/Register';
 import ForgotPassword from '@/pages/ForgotPassword';
@@ -20,9 +22,14 @@ import PaymentPage from '@/pages/PaymentPage';
 import StoragePage from '@/pages/StoragePage';
 import SettingsPage from '@/pages/SettingsPage';
 import AgentChat from '@/pages/AgentChat';
+import BuyerOrders from '@/pages/BuyerOrders';
+import BuyerSettings from '@/pages/BuyerSettings';
 import SimulationTheater from '@/pages/SimulationTheater';
 import AuditTrailPage from '@/pages/AuditTrailPage';
 import DemoPage from '@/pages/DemoPage';
+
+import CatalogManager from '@/pages/CatalogManager';
+import Transcripts from '@/pages/Transcripts';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -55,17 +62,24 @@ const AuthenticatedApp = () => {
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/demo" element={<DemoPage />} />
       
+      <Route path="/" element={<Landing />} />
       <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
         <Route element={<AppLayout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/agent-chat" element={<AgentChat />} />
+          <Route path="/merchant" element={<Dashboard />} />
+          <Route path="/buyer" element={<AgentChat />} />
+          <Route path="/buyer/orders" element={<BuyerOrders />} />
+          <Route path="/buyer/settings" element={<BuyerSettings />} />
+          <Route path="/merchant/campaigns" element={<Campaigns />} />
+          <Route path="/merchant/catalog" element={<CatalogManager />} />
+          <Route path="/merchant/transcripts" element={<Transcripts />} />
           <Route path="/simulation" element={<SimulationTheater />} />
-          <Route path="/audit" element={<AuditTrailPage />} />
-          <Route path="/invoice/new" element={<NewInvoice />} />
+          <Route path="/merchant/audit" element={<AuditTrailPage />} />
+          <Route path="/merchant/invoice/new" element={<NewInvoice />} />
           <Route path="/invoice/:id" element={<InvoiceDetail />} />
           <Route path="/invoice/:id/pay" element={<PaymentPage />} />
-          <Route path="/storage" element={<StoragePage />} />
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/merchant/storage" element={<StoragePage />} />
+          <Route path="/merchant/settings" element={<SettingsPage />} />
+          <Route path="/audit" element={<Navigate to="/merchant/audit" replace />} />
         </Route>
       </Route>
 

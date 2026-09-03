@@ -17,11 +17,11 @@ export default function InvoicePreview({ invoice }) {
   return (
     <div className="bg-white text-gray-900 rounded-2xl border border-border/80 overflow-hidden relative shadow-sm">
       {/* Header */}
-      <div className="govt-header-gradient px-6 py-5 relative">
+      <div className="agentic-header-gradient px-6 py-5 relative">
         <div className="flex items-start justify-between relative z-10">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center border border-white/10">
-              <img src="/logo.png" alt="" className="w-7 h-7 rounded-lg object-contain" />
+            <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center border border-white/10 overflow-hidden">
+              <img src="/logo.png" alt="Logo" className="w-full h-full object-cover" />
             </div>
             <div>
               <h2 className="text-base font-heading font-bold text-white">{invoice.institution_name || 'Institution Name'}</h2>
@@ -49,10 +49,10 @@ export default function InvoicePreview({ invoice }) {
           <div className="text-right">
             <p className="text-[10px] uppercase font-bold text-gray-400 tracking-widest">Details</p>
             <p className="text-xs mt-1 text-gray-600">
-              Date: {invoice.invoice_date ? format(new Date(invoice.invoice_date), 'dd MMM yyyy') : '—'}
+              Date: {invoice.invoice_date ? format(new Date(invoice.invoice_date), 'dd MMM yyyy, HH:mm:ss') : '—'}
             </p>
             <p className="text-xs text-gray-600">
-              Due: {invoice.due_date ? format(new Date(invoice.due_date), 'dd MMM yyyy') : '—'}
+              Due: {invoice.due_date ? format(new Date(invoice.due_date), 'dd MMM yyyy, HH:mm:ss') : '—'}
             </p>
             {invoice.gst_number && (
               <p className="text-[11px] font-mono text-gray-400 mt-1">GST: {invoice.gst_number}</p>

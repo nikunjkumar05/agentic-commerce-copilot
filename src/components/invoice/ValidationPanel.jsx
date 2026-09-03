@@ -9,7 +9,7 @@ const severityConfig = {
   error: { icon: AlertCircle, color: 'text-red-500', bg: 'bg-red-50' },
 };
 
-export default function ValidationPanel({ score, suggestions, isValidating }) {
+export default function ValidationPanel({ score, suggestions, isValidating, demoMode }) {
   if (isValidating) {
     return (
       <div className="p-6 text-center">
@@ -22,11 +22,18 @@ export default function ValidationPanel({ score, suggestions, isValidating }) {
 
   if (score === null || score === undefined) return null;
 
-  const scoreColor = score >= 80 ? 'text-green-600' : score >= 50 ? 'text-yellow-600' : 'text-red-500';
-  const scoreBg = score >= 80 ? 'stroke-green-500' : score >= 50 ? 'stroke-yellow-500' : 'stroke-red-500';
+  const scoreColor = score >= 85 ? 'text-green-600' : score >= 50 ? 'text-yellow-600' : 'text-red-500';
+  const scoreBg = score >= 85 ? 'stroke-green-500' : score >= 50 ? 'stroke-yellow-500' : 'stroke-red-500';
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-4 space-y-4">
+      {/* Demo Mode honesty flag — shown when the backend served a mock response */}
+      {demoMode && (
+        <div className="flex items-center gap-2 text-xs font-medium text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          Demo Mode: this AI response is a canned fallback (MISTRAL_API_KEY not configured) — not a live model.
+        </div>
+      )}
       {/* Score Ring */}
       <div className="flex items-center gap-4">
         <div className="relative w-20 h-20">
@@ -46,10 +53,10 @@ export default function ValidationPanel({ score, suggestions, isValidating }) {
         <div>
           <p className="text-sm font-bold">Compliance Score</p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {score >= 80 ? 'Invoice looks good!' : score >= 50 ? 'Some issues found' : 'Critical issues detected'}
+            {score >= 85 ? 'Invoice looks good!' : score >= 50 ? 'Some issues found' : 'Critical issues detected'}
           </p>
-          <Badge className={cn("mt-1 text-[10px]", score >= 80 ? 'bg-green-100 text-green-700' : score >= 50 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700')}>
-            {score >= 80 ? 'PASSED' : score >= 50 ? 'NEEDS REVIEW' : 'FAILED'}
+          <Badge className={cn("mt-1 text-[10px]", score >= 85 ? 'bg-green-100 text-green-700' : score >= 50 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700')}>
+            {score >= 85 ? 'PASSED' : score >= 50 ? 'NEEDS REVIEW' : 'FAILED'}
           </Badge>
         </div>
       </div>
@@ -74,7 +81,7 @@ export default function ValidationPanel({ score, suggestions, isValidating }) {
         </div>
       )}
 
-      {(!suggestions || suggestions.length === 0) && score >= 80 && (
+      {(!suggestions || suggestions.length === 0) && score >= 85 && (
         <div className="flex items-center gap-2 p-3 bg-green-50 rounded-xl">
           <CheckCircle2 className="w-4 h-4 text-green-600" />
           <p className="text-xs font-medium text-green-700">All compliance checks passed</p>

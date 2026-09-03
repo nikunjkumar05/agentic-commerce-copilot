@@ -2,7 +2,7 @@ import { db } from '@/services/db';
 
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,9 +12,14 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { ArrowLeft, Loader2, CheckCircle2, Wallet, Zap, Users, Bot, ExternalLink, Plus, Shield, ShieldAlert, CheckCircle, XCircle } from 'lucide-react';
-import { formatCurrency, generateTxHash } from '@/lib/invoiceHelpers';
+import { ArrowLeft, Loader2, CheckCircle2, Wallet, Users, Bot, Plus, Shield, ShieldAlert, CheckCircle, XCircle, FileDown } from 'lucide-react';
+import { formatCurrency } from '@/lib/invoiceHelpers';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/lib/AuthContext';
+import { useRef } from 'react';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
+import InvoicePreview from '@/components/invoice/InvoicePreview';
 
 export default function PaymentPage() {
   const { id } = useParams();
@@ -24,26 +29,26 @@ export default function PaymentPage() {
   const [receipt, setReceipt] = useState(null);
   const [agentError, setAgentError] = useState(null);
 
-  // Agent delegation state
-  const [delegation, setDelegation] = useState(() => {
-    const stored = localStorage.getItem('agent_delegation');
-    return stored ? JSON.parse(stored) : null;
-  });
+  const previewRef = useRef(null);
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
+
+  const { user, refetchProfile } = useAuth();
+  
+  // Agent delegation state derived from the real DB user row
+  const delegation = user?.agent_delegation_max > 0 ? { maxAmount: user.agent_delegation_max } : null;
   const [maxAmount, setMaxAmount] = useState('100000');
+  const [dailyLimit, setDailyLimit] = useState('200000');
   const [expiryDays, setExpiryDays] = useState('30');
 
-  // Milestones state — persisted per invoice
-  const [milestones, setMilestones] = useState(() => {
-    try {
-      const stored = localStorage.getItem(`milestones_${id}`);
-      return stored ? JSON.parse(stored) : [];
-    } catch { return []; }
-  });
+  const [milestones, setMilestones] = useState([]);
 
-  // Persist milestones to localStorage whenever they change
+  // Sync milestones from the real database invoice row
   useEffect(() => {
-    localStorage.setItem(`milestones_${id}`, JSON.stringify(milestones));
-  }, [milestones, id]);
+    if (invoice && invoice.milestones) {
+      // Only set if not already set, or if we want to force sync
+      setMilestones(invoice.milestones);
+    }
+  }, [invoice]);
 
   const { data: invoice, isLoading } = useQuery({
     queryKey: ['invoice', id],
@@ -78,14 +83,43 @@ export default function PaymentPage() {
   };
 
   const handleMPPRelease = async (milestoneIdx) => {
+    if (!invoice) return;
     setIsProcessing(true);
-    await new Promise(r => setTimeout(r, 2000));
-    const txHash = generateTxHash();
-    const updated = [...milestones];
-    updated[milestoneIdx] = { ...updated[milestoneIdx], status: 'released', txHash };
-    setMilestones(updated);
-    toast.success(`Milestone ${milestoneIdx + 1} released`);
-    setIsProcessing(false);
+    // HONEST MPP: no artificial delay and NO fake transaction hash.
+    // Real escrow/blockchain settlement is not configured, so we record the
+    // release in the REAL audit ledger (SHA-256 hash-chain) and persist the
+    // milestone state to the REAL invoice row — then tell the user plainly that
+    // no on-chain escrow transfer occurred.
+    try {
+      const m = milestones[milestoneIdx];
+      const auditEntry = await db.entities.AgentAuditLog.create({
+        action: 'milestone_released',
+        invoice_id: id,
+        invoice_number: invoice.invoice_number,
+        amount: m?.amount || 0,
+        details: `Milestone ${milestoneIdx + 1} (${m?.description || 'Phase'}) released. Recorded in audit ledger; on-chain escrow is NOT configured so no blockchain transaction occurred.`
+      });
+
+      const updated = [...milestones];
+      updated[milestoneIdx] = {
+        ...updated[milestoneIdx],
+        status: 'released',
+        // Real verifiable reference (the audit ledger row id) instead of a fake hash
+        auditId: auditEntry?.id || null,
+        releasedAt: new Date().toISOString(),
+      };
+
+      // Persist to the real invoice row (server-side), not just localStorage
+      await db.entities.Invoice.update(id, { milestones: updated });
+      setMilestones(updated);
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] });
+      toast.success(`Milestone ${milestoneIdx + 1} released — recorded in audit ledger`);
+    } catch (err) {
+      console.error('Milestone release failed:', err);
+      toast.error(`Milestone release failed: ${err?.message || 'unknown error'}`);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const addMilestone = () => {
@@ -97,7 +131,9 @@ export default function PaymentPage() {
       description: `Phase ${numMilestones}`,
       amount: invoice.grand_total - updated.reduce((s, m) => s + m.amount, 0),
       status: 'pending',
-      recipients: [{ name: invoice.recipient_name || 'Recipient', address: '0x...', percentage: 100 }],
+      // No fake recipient address: a real escrow would need real wallet/linked
+      // account info which this flow does not collect (and we must not invent it).
+      recipients: [{ name: invoice.recipient_name || 'Recipient', percentage: 100 }],
     });
     setMilestones(updated);
   };
@@ -108,19 +144,19 @@ export default function PaymentPage() {
       await fetch('/api/user/delegation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
-        body: JSON.stringify({ maxAmount: Number(maxAmount) || 0 })
+        body: JSON.stringify({ maxAmount: Number(maxAmount) || 0, dailyLimit: Number(dailyLimit) || 0 })
       });
 
-      // Update local state without touching localStorage
-      setDelegation({
-        maxAmount: Number(maxAmount),
-        expiry: Date.now() + Number(expiryDays) * 86400000
-      });
+      // Sync with real DB state
+      await refetchProfile();
 
       await db.entities.AgentAuditLog.create({
         action: 'delegation_created', amount: Number(maxAmount),
-        agent_address: del.agentAddress, owner_address: del.ownerAddress,
-        details: `Delegation up to ₹${maxAmount} for ${expiryDays} days securely anchored to database.`,
+        // NOTE: `del` used to be referenced here but was undefined — the audit
+        // entry silently never got written while the UI still toasted success.
+        // No real agent/owner addresses are collected in this flow, so we leave
+        // them unset (null) and log an accurate description instead.
+        details: `Delegation up to ₹${maxAmount} for ${expiryDays} days anchored to the server (database).`,
       });
     } catch (err) {
       console.error('Failed to log delegation:', err);
@@ -165,7 +201,7 @@ export default function PaymentPage() {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID, // Use env variable instead of hardcoded key
         amount: Math.round(invoice.grand_total * 100),
         currency: invoice.currency || 'INR',
-        name: 'Agentic Commerce Co-Pilot',
+        name: 'AgentPay Gateway',
         description: `Autonomous Settlement for ${invoice.invoice_number}`,
         order_id: data.order.id,
         handler: async function (response) {
@@ -191,7 +227,7 @@ export default function PaymentPage() {
               txHash: response.razorpay_payment_id, 
               method: 'Razorpay Route (Autonomous)', 
               amount: formatCurrency(invoice.grand_total, invoice.currency), 
-              network: 'Razorpay Testnet' 
+              network: 'Razorpay (test mode)',
             });
             queryClient.invalidateQueries({ queryKey: ['invoice', id] });
           } catch (err) {
@@ -200,7 +236,7 @@ export default function PaymentPage() {
           }
         },
         prefill: { name: 'AI Buyer Agent', email: 'agent@commerce.copilot' },
-        theme: { color: '#9333ea' } // matches the purple agent theme
+        theme: { color: '#9333ea' } // matches the blue agent theme
       };
 
       if (window.__rzpFailed || typeof window.Razorpay === 'undefined') {
@@ -237,6 +273,26 @@ export default function PaymentPage() {
     toast.success('Delegation revoked');
   };
 
+  const handleExportPDF = async () => {
+    if (!previewRef.current) return;
+    setIsExportingPDF(true);
+    try {
+      const canvas = await html2canvas(previewRef.current, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`${invoice.invoice_number}_receipt.pdf`);
+      toast.success('Receipt downloaded!');
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to generate PDF');
+    } finally {
+      setIsExportingPDF(false);
+    }
+  };
+
   if (isLoading) return <div className="p-4 space-y-3">{Array(3).fill(0).map((_, i) => <Skeleton key={i} className="h-20 rounded-2xl" />)}</div>;
   if (!invoice) return <div className="p-8 text-center text-muted-foreground">Invoice not found</div>;
 
@@ -260,15 +316,26 @@ export default function PaymentPage() {
               <span className="text-muted-foreground">Network</span><span>{receipt.network}</span>
             </div>
             <div className="flex justify-between text-sm items-start">
-              <span className="text-muted-foreground">TX Hash</span>
+              <span className="text-muted-foreground">Reference</span>
               <span className="font-mono text-xs text-right max-w-[200px] break-all">{receipt.txHash}</span>
             </div>
-            <a href={`https://sepolia-optimism.etherscan.io/tx/${receipt.txHash}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-primary font-medium">
-              View on Explorer <ExternalLink className="w-3 h-3" />
-            </a>
+            <p className="text-xs text-muted-foreground">
+              No on-chain transaction exists for this record — the balance was settled via {receipt.method}.
+            </p>
           </CardContent>
         </Card>
-        <Link to={`/invoice/${id}`}><Button className="w-full mt-4">Back to Invoice</Button></Link>
+        <div className="flex gap-2 mt-4">
+          <Link to={`/invoice/${id}`} className="flex-1"><Button variant="outline" className="w-full">Back to Invoice</Button></Link>
+          <Button className="flex-1" onClick={handleExportPDF} disabled={isExportingPDF}>
+            {isExportingPDF ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <FileDown className="w-4 h-4 mr-2" />}
+            Download Receipt
+          </Button>
+        </div>
+        <div style={{ position: 'absolute', left: '-9999px', top: '-9999px' }}>
+          <div ref={previewRef} className="w-[800px] bg-white text-black p-8">
+            <InvoicePreview invoice={{ ...invoice, status: 'paid' }} />
+          </div>
+        </div>
       </div>
     );
   }
@@ -306,12 +373,12 @@ export default function PaymentPage() {
                     <CheckCircle className="w-3 h-3 text-green-500" /> Parsed invoice {invoice.invoice_number}
                   </li>
                   {invoice.compliance_score < 85 ? (
-                    <li className="flex items-center gap-2 text-xs font-medium text-red-400">
-                      <XCircle className="w-3 h-3 text-red-500" /> Compliance Score ({invoice.compliance_score}) &lt; 85
+                    <li className="flex items-center gap-1 text-xs font-medium text-red-400">
+                      <XCircle className="w-3 h-3 text-red-500" /> AI Confidence ({invoice.compliance_score}) &lt; 85
                     </li>
                   ) : (
-                    <li className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <CheckCircle className="w-3 h-3 text-green-500" /> Compliance Score ({invoice.compliance_score}) ≥ 85
+                    <li className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <CheckCircle className="w-3 h-3 text-green-500" /> AI Confidence ({invoice.compliance_score}) ≥ 85
                     </li>
                   )}
                   {invoice.grand_total > (delegation?.maxAmount || 0) ? (
@@ -436,7 +503,11 @@ export default function PaymentPage() {
                         Release Payment
                       </Button>
                     )}
-                    {m.txHash && <p className="text-[10px] font-mono text-muted-foreground">TX: {m.txHash.slice(0, 20)}...</p>}
+                    {m.status === 'released' && (
+                      <p className="text-[10px] font-mono text-muted-foreground">
+                        Audit ref: {m.auditId ? `${m.auditId.slice(0, 20)}...` : 'recorded (no on-chain tx)'}
+                      </p>
+                    )}
                   </div>
                 ))
               )}
@@ -452,37 +523,37 @@ export default function PaymentPage() {
         <TabsContent value="agent">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm flex items-center gap-2"><Bot className="w-4 h-4 text-purple-500" /> ERC-8004 Agent Settlement</CardTitle>
+              <CardTitle className="text-sm flex items-center gap-2"><Bot className="w-4 h-4 text-blue-500" /> B2B Mandate Settlement</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent>
               {delegation ? (
-                <>
-                  <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Shield className="w-4 h-4 text-purple-600" />
-                      <span className="text-xs font-semibold text-purple-700">Active Delegation</span>
+                <div className="space-y-4">
+                  <div className="p-3 bg-blue-50 border border-blue-100 rounded-lg flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-full bg-blue-200 flex items-center justify-center shrink-0">
+                      <Bot className="w-4 h-4 text-blue-700" />
                     </div>
-                    <div className="text-xs space-y-1 text-purple-600">
+                    <div className="text-xs space-y-1 text-blue-600">
                       <p>Max Amount: ₹{delegation.maxAmount?.toLocaleString()}</p>
-                      <p>Expires: {new Date(delegation.expiry).toLocaleDateString()}</p>
-                      <p className="font-mono text-[10px]">Agent: {delegation.agentAddress?.slice(0, 14)}...</p>
+                      <p>Daily Cap: ₹{user?.agent_daily_limit?.toLocaleString() || '0'}</p>
+                      <p>Expires: Never (until revoked)</p>
+                      <p className="font-mono text-[10px]">Agent: system-orchestrator</p>
                     </div>
                   </div>
-                  <Button className="w-full h-12 text-sm font-semibold bg-purple-600 hover:bg-purple-700" onClick={handleAgentSettle} disabled={isProcessing || invoice.status === 'paid'}>
-                    {isProcessing ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Agent Settling...</> : <><Bot className="w-4 h-4 mr-2" /> Run Agent Settlement</>}
+                  <Button className="w-full h-12 text-sm font-semibold bg-blue-600 hover:bg-blue-700" onClick={handleAgentSettle} disabled={isProcessing || invoice.status === 'paid'}>
+                    {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Bot className="w-4 h-4 mr-2" />}
+                    Authorize Autonomous Payment
                   </Button>
-                  <Button variant="outline" size="sm" className="w-full text-xs text-destructive" onClick={revokeDelegation}>Revoke Delegation</Button>
-                </>
+                </div>
               ) : (
-                <div className="space-y-3">
-                  <p className="text-xs text-muted-foreground">Set up an AI agent to autonomously settle invoices on your behalf (ERC-8004 delegation).</p>
+                <div className="text-center space-y-3 py-2">
+                  <p className="text-xs text-muted-foreground">Set up an AI agent to autonomously settle invoices on your behalf (B2B Mandate delegation).</p>
                   <div>
                     <Label className="text-xs">Max Amount (₹)</Label>
                     <Input type="number" value={maxAmount} onChange={e => setMaxAmount(e.target.value)} className="mt-1 h-9 text-sm" />
                   </div>
                   <div>
-                    <Label className="text-xs">Expiry (days)</Label>
-                    <Input type="number" value={expiryDays} onChange={e => setExpiryDays(e.target.value)} className="mt-1 h-9 text-sm" />
+                    <Label className="text-xs">Daily Cap (₹)</Label>
+                    <Input type="number" value={dailyLimit} onChange={e => setDailyLimit(e.target.value)} className="mt-1 h-9 text-sm" />
                   </div>
                   <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 flex items-start gap-2">
                     <Shield className="w-4 h-4 text-yellow-600 mt-0.5 shrink-0" />

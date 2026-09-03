@@ -11,6 +11,7 @@ export default function AuditTrailPage() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationComplete, setVerificationComplete] = useState(false);
   const [verificationError, setVerificationError] = useState(null);
+  const [filter, setFilter] = useState('all');
   const { data: logs = [], isLoading } = useQuery({
     queryKey: ['audit-logs-full'],
     queryFn: () => db.entities.AgentAuditLog.list('-created_date', 100),
@@ -30,9 +31,6 @@ export default function AuditTrailPage() {
       });
       const data = await res.json();
       
-      // Artificial delay just for the UI dramatic effect during demo
-      await new Promise(r => setTimeout(r, 1200));
-
       if (data.valid) {
         setVerificationComplete(true);
       } else {
@@ -47,29 +45,71 @@ export default function AuditTrailPage() {
 
   const getActionConfig = (action) => {
     const lowerAction = action?.toLowerCase() || '';
+    // Hard-fail / breach categories — always red, even on small wording
+    if (lowerAction.includes('mismatch') || lowerAction.includes('block') || lowerAction.includes('fail') || lowerAction.includes('rate_limit')) {
+      return { icon: AlertTriangle, color: 'text-red-500', bg: 'bg-red-500/10', severity: 'critical' };
+    }
     if (lowerAction.includes('settle')) return { icon: Zap, color: 'text-yellow-500', bg: 'bg-yellow-500/10' };
     if (lowerAction.includes('valid')) return { icon: Shield, color: 'text-blue-500', bg: 'bg-blue-500/10' };
-    if (lowerAction.includes('delegat')) return { icon: LinkIcon, color: 'text-green-500', bg: 'bg-green-500/10' };
-    if (lowerAction.includes('block') || lowerAction.includes('fail')) return { icon: AlertTriangle, color: 'text-red-500', bg: 'bg-red-500/10' };
-    return { icon: FileText, color: 'text-purple-500', bg: 'bg-purple-500/10' };
+    if (lowerAction.includes('delegat') || lowerAction.includes('mandate')) return { icon: LinkIcon, color: 'text-green-500', bg: 'bg-green-500/10' };
+    return { icon: FileText, color: 'text-blue-500', bg: 'bg-blue-500/10' };
   };
+
+  // Filter tabs so judges can isolate failures and breaches.
+  const filtered = (() => {
+    if (filter === 'all') return logs;
+    if (filter === 'blocks') return logs.filter(l => /block|mismatch|rate_limit|fail/i.test(l.action || ''));
+    if (filter === 'settlements') return logs.filter(l => /settle|mandate|delegat|campaign/i.test(l.action || ''));
+    return logs;
+  })();
+
+  const failureCount = logs.filter(l => /block|mismatch|rate_limit|fail/i.test(l.action || '')).length;
 
   return (
     <div className="flex flex-col h-[calc(100vh-64px)] bg-background">
       {/* Header */}
-      <div className="px-6 py-4 border-b bg-card z-10 shadow-sm flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-bold font-heading leading-tight">Cryptographic Audit Trail</h2>
-          <p className="text-xs text-muted-foreground">Immutable ledger of autonomous agent actions</p>
+      <div className="px-6 py-4 border-b bg-card z-10 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-bold font-heading leading-tight">Cryptographic Audit Trail</h2>
+            <p className="text-xs text-muted-foreground">Immutable ledger of autonomous agent actions</p>
+          </div>
+          <Button
+            onClick={verifyIntegrity}
+            disabled={isVerifying || isLoading || logs.length === 0}
+            className={`${verificationComplete ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-slate-800 hover:bg-slate-900 text-white'} gap-2`}
+          >
+            {isVerifying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
+            {isVerifying ? 'Verifying Chain...' : verificationComplete ? 'Chain Validated' : 'Verify Integrity'}
+          </Button>
         </div>
-        <Button 
-          onClick={verifyIntegrity} 
-          disabled={isVerifying || isLoading || logs.length === 0}
-          className={`${verificationComplete ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-slate-800 hover:bg-slate-900 text-white'} gap-2`}
-        >
-          {isVerifying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
-          {isVerifying ? 'Verifying Chain...' : verificationComplete ? 'Chain Validated' : 'Verify Integrity'}
-        </Button>
+
+        {failureCount > 0 && (
+          <div className="mt-3 mb-1 p-2 bg-red-500/10 border border-red-500/30 rounded-md text-xs text-red-700 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span><strong>{failureCount}</strong> failure / breach event{failureCount === 1 ? '' : 's'} in this ledger. Review the <em>Blocks &amp; Failures</em> tab.</span>
+          </div>
+        )}
+
+        <div className="mt-3 flex gap-1 bg-background/60 border border-border rounded-lg p-1 w-full sm:w-auto">
+          {[
+            { id: 'all', label: `All (${logs.length})` },
+            { id: 'blocks', label: `Blocks & Failures (${failureCount})` },
+            { id: 'settlements', label: 'Settlements' },
+          ].map(t => (
+            <button
+              key={t.id}
+              onClick={() => setFilter(t.id)}
+              className={`flex-1 sm:flex-none px-3 py-1.5 text-xs rounded-md font-medium transition-colors ${
+                filter === t.id
+                  ? 'bg-card text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Timeline List */}
@@ -104,9 +144,11 @@ export default function AuditTrailPage() {
             <div className="flex justify-center p-8"><Loader2 className="w-6 h-6 animate-spin text-muted-foreground" /></div>
           ) : logs.length === 0 ? (
             <div className="text-center p-8 text-sm text-muted-foreground">No agent actions recorded yet.</div>
+          ) : filtered.length === 0 ? (
+            <div className="text-center p-8 text-sm text-muted-foreground">No agent actions match this filter.</div>
           ) : (
             <div className="relative border-l-2 border-muted ml-4 md:ml-0 space-y-8">
-              {logs.map((log, index) => {
+              {filtered.map((log, index) => {
                 const config = getActionConfig(log.action);
                 const Icon = config.icon;
                 const prevHash = log.prev_hash || '0'.repeat(64);
