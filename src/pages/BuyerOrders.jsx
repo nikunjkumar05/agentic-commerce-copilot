@@ -18,7 +18,7 @@ export default function BuyerOrders() {
   const myOrders = invoices.filter(inv => inv.status === 'paid' || inv.status === 'validated');
 
   return (
-    <div className="max-w-3xl mx-auto p-4 md:p-8 space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="max-w-4xl mx-auto p-4 md:p-8 space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold font-heading text-gray-900">My Orders</h2>
         <Link to="/buyer" className="text-sm text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1">
