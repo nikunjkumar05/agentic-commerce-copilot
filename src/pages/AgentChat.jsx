@@ -524,11 +524,8 @@ const [fallbackMode, setFallbackMode] = useState(false);
             }
           }
         }
-      } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: data.content }]);
-      }
-
-    } catch (err) {
+        }
+      } catch (err) {
       console.error(err);
       setMessages(prev => [...prev, {
         role: 'assistant',
