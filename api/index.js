@@ -706,7 +706,11 @@ app.get('/api/invoices', authMiddleware, async (req, res) => {
   const safeField = ALLOWED_SORT_FIELDS.has(sortField) ? sortField : 'created_date';
 
   const result = await query(
-    `SELECT * FROM invoices WHERE (user_id = $1 OR buyer_id = $1) ORDER BY ${safeField} ${dir} LIMIT $2`,
+    `SELECT * FROM invoices 
+     WHERE (user_id = $1 OR buyer_id = $1 
+            OR recipient_name ILIKE (SELECT name FROM users WHERE id = $1)
+            OR recipient_name ILIKE (SELECT email FROM users WHERE id = $1))
+     ORDER BY ${safeField} ${dir} LIMIT $2`,
     [req.user.id, limit]
   );
 
@@ -714,7 +718,14 @@ app.get('/api/invoices', authMiddleware, async (req, res) => {
 });
 
 app.get('/api/invoices/:id', authMiddleware, async (req, res) => {
-  const result = await query('SELECT * FROM invoices WHERE (id = $1 OR invoice_number = $1) AND (user_id = $2 OR buyer_id = $2)', [req.params.id, req.user.id]);
+  const result = await query(
+    `SELECT * FROM invoices 
+     WHERE (id = $1 OR invoice_number = $1) 
+       AND (user_id = $2 OR buyer_id = $2 
+            OR recipient_name ILIKE (SELECT name FROM users WHERE id = $2)
+            OR recipient_name ILIKE (SELECT email FROM users WHERE id = $2))`,
+    [req.params.id, req.user.id]
+  );
   if (result.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   res.json(parseInvoice(result.rows[0]));
 });
@@ -821,14 +832,29 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
   const today = new Date().toISOString().split('T')[0];
   const dueDefault = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
 
+  let buyerId = data.buyer_id || null;
+  if (!buyerId && data.recipient_name) {
+    try {
+      const matched = await query(
+        'SELECT id FROM users WHERE LOWER(name) = LOWER($1) OR LOWER(email) = LOWER($1) LIMIT 1',
+        [data.recipient_name.trim()]
+      );
+      if (matched.rows.length > 0) {
+        buyerId = matched.rows[0].id;
+      }
+    } catch (e) {
+      console.warn('Could not resolve buyer_id for invoice:', e.message);
+    }
+  }
+
   await query(`
-    INSERT INTO invoices (id, user_id, invoice_number, institution_name, institution_address,
+    INSERT INTO invoices (id, user_id, buyer_id, invoice_number, institution_name, institution_address,
       gst_number, recipient_name, recipient_address, recipient_gst, line_items, subtotal,
       tax_total, grand_total, currency, status, compliance_score, ai_suggestions,
       invoice_date, due_date, milestones, is_ai_upsell)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
   `, [
-    id, req.user.id,
+    id, req.user.id, buyerId,
     data.invoice_number || `INV-${Math.floor(Math.random() * 100000)}`,
     data.institution_name || 'Agentic Commerce Co-Pilot', data.institution_address || 'New Delhi, India', data.gst_number || '07AAACN0372J1ZB',
     data.recipient_name || null, data.recipient_address || null, data.recipient_gst || null,
