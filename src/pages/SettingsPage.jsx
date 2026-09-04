@@ -8,9 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Building2, Wallet, Bot, Database as DatabaseIcon, Info, Shield, LogOut, Download, ArrowRight } from 'lucide-react';
+import { Building2, Bot, Database as DatabaseIcon, Shield, LogOut, Download, ArrowRight } from 'lucide-react';
 
 export default function SettingsPage() {
   const navigate = useNavigate();
@@ -103,31 +102,6 @@ export default function SettingsPage() {
             <Input value={profile.gst} onChange={e => setProfile({ ...profile, gst: e.target.value })} className="mt-1 h-9 text-sm font-mono" placeholder="07AAACN0372J1ZB" />
           </div>
           <Button size="sm" onClick={saveProfile}>Save Profile</Button>
-        </CardContent>
-      </Card>
-
-      {/* Wallet & Blockchain */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2"><Wallet className="w-4 h-4" /> Blockchain</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 flex items-start gap-2">
-            <Info className="w-4 h-4 text-yellow-600 mt-0.5 shrink-0" />
-            <p className="text-xs text-yellow-700">
-              Not connected: this build has no blockchain integration. Payments settle via
-              Razorpay (test mode) or a manually recorded bank transfer — no on-chain
-              transaction is created, and no wallet or token contract is deployed.
-            </p>
-          </div>
-          <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">Network</span>
-            <Badge variant="outline" className="text-[10px] font-mono">Not connected</Badge>
-          </div>
-          <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">Token contract</span>
-            <Badge variant="outline" className="text-[10px] font-mono">Not deployed</Badge>
-          </div>
         </CardContent>
       </Card>
 
