@@ -45,7 +45,10 @@ export default function Campaigns() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(payload)
       });
-      if (!res.ok) throw new Error('Failed to save');
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || 'Failed to save campaign');
+      }
       return res.json();
     },
     onSuccess: () => {
@@ -54,6 +57,9 @@ export default function Campaigns() {
       setEditId(null);
       setFormData({ name: '', upsell_product_ids: [], target_statuses: ['validated'] });
       toast.success(`Campaign ${editId ? 'updated' : 'created'}`);
+    },
+    onError: (err) => {
+      toast.error(err.message || 'Failed to save campaign');
     }
   });
 

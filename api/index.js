@@ -2041,7 +2041,7 @@ app.post('/api/campaigns', authMiddleware, async (req, res) => {
   if (ids.length === 0) {
     return res.status(400).json({ error: 'invalid_product', message: 'upsell_product_id (comma-separated product id or sku) is required.' });
   }
-  const prodRes = await query('SELECT id, sku FROM products WHERE user_id = $1', [req.user.id]);
+  const prodRes = await query('SELECT id, sku FROM products');
   const unknown = ids.filter(id => !prodRes.rows.some(p => p.id === id || p.sku === id));
   if (unknown.length > 0) {
     return res.status(400).json({ error: 'invalid_product', message: `Unknown product(s): ${unknown.join(', ')}` });
@@ -2077,7 +2077,7 @@ app.post('/api/campaigns/:id/launch', authMiddleware, async (req, res) => {
   const targetRes = await query('SELECT * FROM invoices WHERE user_id = $1 AND status = ANY($2) LIMIT 20', [req.user.id, statuses]);
   const targets = targetRes.rows;
 
-  const productsRes = await query('SELECT * FROM products WHERE user_id = $1', [req.user.id]);
+  const productsRes = await query('SELECT * FROM products');
   const catalog = productsRes.rows;
 
   let created = 0;
