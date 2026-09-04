@@ -2073,8 +2073,16 @@ app.post('/api/campaigns/:id/launch', authMiddleware, async (req, res) => {
   if (campRes.rows.length === 0) return res.status(404).json({ error: 'not_found' });
   const campaign = campRes.rows[0];
 
+  if (campaign.status === 'launched') {
+    return res.status(400).json({ error: 'already_launched', message: 'Campaign is already launched. Revoke it before re-launching.' });
+  }
+
   const statuses = campaign.target_status.split(',').map(s => s.trim()).filter(Boolean);
-  const targetRes = await query('SELECT * FROM invoices WHERE user_id = $1 AND status = ANY($2) LIMIT 20', [req.user.id, statuses]);
+  // Target only organic customer invoices — never re-target existing campaign upsell drafts
+  const targetRes = await query(
+    'SELECT * FROM invoices WHERE user_id = $1 AND status = ANY($2) AND (is_ai_upsell IS NOT TRUE) AND (campaign_id IS NULL) LIMIT 20',
+    [req.user.id, statuses]
+  );
   const targets = targetRes.rows;
 
   const productsRes = await query('SELECT * FROM products');
@@ -2161,8 +2169,11 @@ app.post('/api/campaigns/:id/dry-run', authMiddleware, async (req, res) => {
   if (campRes.rows.length === 0) return res.status(404).json({ error: 'not_found' });
   const campaign = campRes.rows[0];
 
-  const statuses = campaign.target_status.split(',');
-  const targetRes = await query('SELECT * FROM invoices WHERE user_id = $1 AND status = ANY($2) LIMIT 3', [req.user.id, statuses]);
+  const statuses = campaign.target_status.split(',').map(s => s.trim()).filter(Boolean);
+  const targetRes = await query(
+    'SELECT * FROM invoices WHERE user_id = $1 AND status = ANY($2) AND (is_ai_upsell IS NOT TRUE) AND (campaign_id IS NULL) LIMIT 3',
+    [req.user.id, statuses]
+  );
   res.json({ previews: targetRes.rows });
 });
 
