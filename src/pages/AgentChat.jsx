@@ -373,8 +373,19 @@ const [fallbackMode, setFallbackMode] = useState(false);
             let tax_total = 0;
             const taxRate = 18;
             
+            let catalogList = [];
+            try {
+              const cr = await fetch('/api/catalog');
+              catalogList = await cr.json();
+            } catch {}
+
             const line_items = itemsList.map(item => {
-              const baseAmount = Number(item.negotiated_price || item.amount || 0);
+              const matchedProd = Array.isArray(catalogList) ? catalogList.find(c => c.sku === item.sku || c.id === item.sku || (c.name && item.description && c.name.toLowerCase() === item.description.toLowerCase())) : null;
+              const defaultListPrice = Number(matchedProd?.price || 0);
+              const hasNegPrice = item.negotiated_price !== undefined && item.negotiated_price !== null;
+              const baseAmount = hasNegPrice
+                ? Number(item.negotiated_price)
+                : (Number(item.amount || item.unit_price || item.price || 0) || defaultListPrice);
               const qty = Number(item.quantity || 1);
               const tax = Math.round(baseAmount * qty * taxRate / 100);
               const totalAmount = baseAmount * qty;
@@ -382,8 +393,9 @@ const [fallbackMode, setFallbackMode] = useState(false);
               tax_total += tax;
               return {
                 sku: item.sku,
-                description: item.description || item.sku,
+                description: item.description || matchedProd?.name || item.sku,
                 quantity: qty,
+                ...(hasNegPrice ? { negotiated_price: Number(item.negotiated_price) } : {}),
                 unit_price: baseAmount,
                 tax_rate: taxRate,
                 total: totalAmount
@@ -445,8 +457,19 @@ const [fallbackMode, setFallbackMode] = useState(false);
               let tax_total = 0;
               const taxRate = 18;
               
+              let catalogList = [];
+              try {
+                const cr = await fetch('/api/catalog');
+                catalogList = await cr.json();
+              } catch {}
+
               const line_items = itemsList.map(item => {
-                const baseAmount = Number(item.negotiated_price || item.amount || 0);
+                const matchedProd = Array.isArray(catalogList) ? catalogList.find(c => c.sku === item.sku || c.id === item.sku || (c.name && item.description && c.name.toLowerCase() === item.description.toLowerCase())) : null;
+                const defaultListPrice = Number(matchedProd?.price || 0);
+                const hasNegPrice = item.negotiated_price !== undefined && item.negotiated_price !== null;
+                const baseAmount = hasNegPrice
+                  ? Number(item.negotiated_price)
+                  : (Number(item.amount || item.unit_price || item.price || 0) || defaultListPrice);
                 const qty = Number(item.quantity || 1);
                 const tax = Math.round(baseAmount * qty * taxRate / 100);
                 const totalAmount = baseAmount * qty;
@@ -454,8 +477,9 @@ const [fallbackMode, setFallbackMode] = useState(false);
                 tax_total += tax;
                 return {
                   sku: item.sku,
-                  description: item.description || item.sku,
+                  description: item.description || matchedProd?.name || item.sku,
                   quantity: qty,
+                  ...(hasNegPrice ? { negotiated_price: Number(item.negotiated_price) } : {}),
                   unit_price: baseAmount,
                   tax_rate: taxRate,
                   total: totalAmount

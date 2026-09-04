@@ -757,7 +757,9 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
       item.description = dbProduct.name;
       item.hsn_code = dbProduct.hsn_code;
       // Allow negotiation down to margin floor, default to list price
-      const requestedPrice = item.negotiated_price ?? item.unit_price ?? item.price ?? dbProduct.price;
+      const requestedPrice = (item.negotiated_price !== undefined && item.negotiated_price !== null)
+        ? Number(item.negotiated_price)
+        : ((item.unit_price && Number(item.unit_price) > 0) ? Number(item.unit_price) : (Number(item.price) || Number(dbProduct.price)));
       
       if (requestedPrice < dbProduct.margin_floor) {
         return res.status(400).json({ 
@@ -894,7 +896,9 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
           item.sku = dbProduct.sku;
           item.description = dbProduct.name;
           item.hsn_code = dbProduct.hsn_code;
-          const requestedPrice = item.negotiated_price ?? item.unit_price ?? item.price ?? dbProduct.price;
+          const requestedPrice = (item.negotiated_price !== undefined && item.negotiated_price !== null)
+            ? Number(item.negotiated_price)
+            : ((item.unit_price && Number(item.unit_price) > 0) ? Number(item.unit_price) : (Number(item.price) || Number(dbProduct.price)));
           
           if (requestedPrice < dbProduct.margin_floor) {
             return res.status(400).json({ 
@@ -2764,7 +2768,7 @@ POST-SALE: After generating the invoice, summarise the deal: what was purchased,
     };
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const timeout = setTimeout(() => controller.abort(), 25000);
 
     const response = await fetch(MISTRAL_URL, {
       method: 'POST',
