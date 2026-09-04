@@ -1,4 +1,6 @@
 const API_BASE = '/api';
+const TOKEN_KEY = 'app_access_token';
+const roleTokenKey = (role) => `app_access_token_${role}`;
 
 async function fetchApi(endpoint, options = {}) {
   const token = localStorage.getItem('app_access_token');
