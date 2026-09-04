@@ -144,7 +144,7 @@ Rules:
       if (!result || !result.line_items) {
         throw new Error('Invalid response from AI');
       }
-      setIsDemoMode(!!result.demo_mode);
+
 
       const recalcSubtotal = result.line_items.reduce((sum, it) => sum + (Number(it.quantity ?? 0) * Number(it.unit_price ?? 0)), 0);
       const recalcTax = result.line_items.reduce((sum, it) => {
