@@ -583,16 +583,15 @@ const [fallbackMode, setFallbackMode] = useState(false);
                 continue;
               }
 
-              // Usually unvalidated (score below gate) or out of bounds
+              const errorMsg = err?.response?.data?.message || err?.message || 'Transaction could not be processed.';
               setMessages(prev => [...prev, {
                 role: 'tool',
                 tool_call_id: call.id,
                 name: 'trigger_payment',
-                content: `ðŸš¨ Agent Blocked: I cannot settle this autonomously. Most likely this invoice has not passed human validation yet (I cannot grade my own work), or it exceeds my delegation limit. Escalating to human checkout...`,
+                content: `⚠️ Payment Blocked: ${errorMsg}`,
                 uiType: 'payment_blocked',
-                uiData: { id: targetId }
+                uiData: { id: targetId, message: errorMsg }
               }]);
-              // Removed setTimeout navigate so user stays in chat
             }
           }
         }
@@ -895,13 +894,13 @@ const [fallbackMode, setFallbackMode] = useState(false);
                 <div className="w-full mt-2 animate-in fade-in slide-in-from-bottom-2 duration-500">
                   <div className="p-4 bg-red-50 border border-red-200 rounded-xl space-y-3">
                     <div className="flex items-center gap-2">
-                       <div className="w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center text-xs">!</div>
-                       <span className="text-sm font-bold text-red-800">Safety Gate Blocked</span>
+                       <div className="w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-bold">!</div>
+                       <span className="text-sm font-bold text-red-800">Payment Blocked</span>
                     </div>
-                    <p className="text-xs text-red-700">This invoice exceeds my authorized limits or lacks human validation.</p>
+                    <p className="text-xs text-red-700">{msg.uiData.message || 'This transaction exceeds your authorized limit.'}</p>
                     <div className="flex gap-2 mt-2">
-                      <Button size="sm" className="flex-1 bg-red-600 hover:bg-red-700 text-white text-xs h-9" onClick={() => navigate(`/invoice/${msg.uiData.id}`)}>
-                        Review & Pay
+                      <Button size="sm" variant="outline" className="flex-1 text-xs h-9 border-red-200" onClick={() => navigate(`/invoice/${msg.uiData.id}`)}>
+                        View Invoice
                       </Button>
                     </div>
                   </div>

@@ -168,6 +168,8 @@ async function enforceMandate(invoice) {
 }
 
 async function enforceBudget(userId, amount, delegation_max) {
+  const numAmount = Number(amount) || 0;
+  const numDelegationMax = Number(delegation_max) || 0;
   const today = new Date().toISOString().slice(0, 10);
   
   // Auto-reset the daily counter at midnight
@@ -176,18 +178,18 @@ async function enforceBudget(userId, amount, delegation_max) {
     [today, userId]
   );
 
-  if (amount > delegation_max) {
+  if (numDelegationMax > 0 && numAmount > numDelegationMax) {
     return {
       status: 403,
       body: {
         error: 'budget_exceeded',
         reason: 'per_transaction',
-        message: `Transaction ₹${amount} exceeds autonomous per-transaction delegation ₹${delegation_max}.`,
+        message: `Transaction ₹${numAmount.toFixed(2)} exceeds autonomous per-transaction delegation ₹${numDelegationMax.toFixed(2)}.`,
       },
       audit: {
         action: 'settlement_blocked',
-        amount,
-        details: `Blocked: ₹${amount} > per-transaction delegation ₹${delegation_max}.`,
+        amount: numAmount,
+        details: `Blocked: ₹${numAmount} > per-transaction delegation ₹${numDelegationMax}.`,
       }
     };
   }
@@ -198,7 +200,7 @@ async function enforceBudget(userId, amount, delegation_max) {
      SET agent_daily_spent = agent_daily_spent + $1 
      WHERE id = $2 AND (agent_daily_limit = 0 OR agent_daily_spent + $1 <= agent_daily_limit) 
      RETURNING agent_daily_limit, agent_daily_spent`,
-    [amount, userId]
+    [numAmount, userId]
   );
 
   if (reserveRes.rowCount === 0) {
@@ -233,7 +235,7 @@ async function refundBudget(userId, amount) {
   try {
     await query(
       'UPDATE users SET agent_daily_spent = GREATEST(agent_daily_spent - $1, 0) WHERE id = $2',
-      [amount, userId]
+      [Number(amount) || 0, userId]
     );
   } catch (e) {
     console.error('[BUDGET] refund failed:', e?.message);
@@ -1551,10 +1553,17 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
   }
   const { invoice_id } = req.body;
   const userRes = await query('SELECT agent_delegation_max FROM users WHERE id = $1', [req.user.id]);
-  const delegation_max = userRes.rows[0]?.agent_delegation_max || 0;
+  const delegation_max = Number(userRes.rows[0]?.agent_delegation_max || 0);
 
-  // Allow lookup by either UUID or human-readable invoice_number
-  const invoiceRes = await query('SELECT * FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [invoice_id, req.user.id]);
+  // Allow lookup by either UUID or human-readable invoice_number, for either merchant or buyer
+  const invoiceRes = await query(
+    `SELECT * FROM invoices 
+     WHERE (id = $1 OR invoice_number = $1) 
+       AND (user_id = $2 OR buyer_id = $2 
+            OR recipient_name ILIKE (SELECT name FROM users WHERE id = $2)
+            OR recipient_name ILIKE (SELECT email FROM users WHERE id = $2))`,
+    [invoice_id, req.user.id]
+  );
   if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invoiceRes.rows[0];
 
@@ -1595,7 +1604,11 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
   // guarantees only ONE concurrent request can claim this invoice.
   const claim = await query(
     `UPDATE invoices SET status = 'processing', updated_date = NOW()
-     WHERE (id = $1 OR invoice_number = $1) AND user_id = $2 AND status NOT IN ('paid', 'processing')
+     WHERE (id = $1 OR invoice_number = $1) 
+       AND (user_id = $2 OR buyer_id = $2 
+            OR recipient_name ILIKE (SELECT name FROM users WHERE id = $2)
+            OR recipient_name ILIKE (SELECT email FROM users WHERE id = $2))
+       AND status NOT IN ('paid', 'processing')
      RETURNING id`,
     [invoice_id, req.user.id]
   );
@@ -1644,11 +1657,18 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
   }
   const { invoice_id } = req.body;
   const userRes = await query('SELECT agent_delegation_max, razorpay_customer_id, razorpay_token_id FROM users WHERE id = $1', [req.user.id]);
-  const delegation_max = userRes.rows[0]?.agent_delegation_max || 0;
+  const delegation_max = Number(userRes.rows[0]?.agent_delegation_max || 0);
   const { razorpay_customer_id, razorpay_token_id } = userRes.rows[0] || {};
 
-  // Allow lookup by either UUID or human-readable invoice_number
-  const invoiceRes = await query('SELECT * FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [invoice_id, req.user.id]);
+  // Allow lookup by either UUID or human-readable invoice_number, for either merchant or buyer
+  const invoiceRes = await query(
+    `SELECT * FROM invoices 
+     WHERE (id = $1 OR invoice_number = $1) 
+       AND (user_id = $2 OR buyer_id = $2 
+            OR recipient_name ILIKE (SELECT name FROM users WHERE id = $2)
+            OR recipient_name ILIKE (SELECT email FROM users WHERE id = $2))`,
+    [invoice_id, req.user.id]
+  );
   if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const invoice = invoiceRes.rows[0];
 
@@ -1688,7 +1708,11 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
   // moves. Row-level lock ensures only ONE concurrent request wins the claim.
   const claim = await query(
     `UPDATE invoices SET status = 'processing', updated_date = NOW()
-     WHERE (id = $1 OR invoice_number = $1) AND user_id = $2 AND status NOT IN ('paid', 'processing')
+     WHERE (id = $1 OR invoice_number = $1) 
+       AND (user_id = $2 OR buyer_id = $2 
+            OR recipient_name ILIKE (SELECT name FROM users WHERE id = $2)
+            OR recipient_name ILIKE (SELECT email FROM users WHERE id = $2))
+       AND status NOT IN ('paid', 'processing')
      RETURNING id`,
     [invoice_id, req.user.id]
   );
@@ -1715,7 +1739,7 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
     if (settlement.mode === 'mandate_captured') {
       // Agent successfully charged autonomously — verify Razorpay says 'captured'
       txHash = settlement.payment.id;
-      await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3 AND user_id = $4', ['paid', txHash, invoice.id, req.user.id]);
+      await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3', ['paid', txHash, invoice.id]);
 
       await appendAuditLog(req.user.id, {
         action: 'settlement_auto',
@@ -1730,7 +1754,7 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
     } else {
       // No mandate token — agent escalates to a REAL Razorpay Payment Link
       txHash = order.id;
-      await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3 AND user_id = $4', ['pending', txHash, invoice.id, req.user.id]);
+      await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3', ['pending', txHash, invoice.id]);
 
       await appendAuditLog(req.user.id, {
         action: 'settlement_escalated',
@@ -1756,8 +1780,8 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
   } catch (err) {
     // RELEASE the claim so the invoice stays retryable after a transient error
     await query(
-      "UPDATE invoices SET status = 'pending', updated_date = NOW() WHERE id = $1 AND user_id = $2 AND status = 'processing'",
-      [invoice.id, req.user.id]
+      "UPDATE invoices SET status = 'pending', updated_date = NOW() WHERE id = $1 AND status = 'processing'",
+      [invoice.id]
     );
     await refundBudget(req.user.id, invoice.grand_total);
     console.error('Razorpay auto-settle error:', err);
