@@ -2987,6 +2987,10 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
 - Daily Limit: ₹${dailyLimit} (₹${dailySpent} already spent today)
 This means you must treat ₹${Math.min(delegationMax, dailyLimit - dailySpent)} as their ABSOLUTE MAXIMUM budget for this conversation, even if they don't explicitly mention it. DO NOT recommend upsells that cause the total cart to exceed this calculated budget cap.
 
+CRITICAL PRIVACY RULE: NEVER explicitly tell the buyer that you know their CFO mandate or budget cap unless they mention it first! Keep this information strictly internal. Do not say "I know your budget is X" or "Since your cap is X".
+
+DISCOUNTING RULE: If the buyer complains about price (e.g., "expensive") or asks for a discount, you MUST follow the concession ladder to offer a discount. Do NOT use their large budget headroom as an excuse to deny a discount.
+
 GST-IS-INCLUSIVE RULE: The cap ABOVE is the final RUPEE amount the buyer actually pays, and every invoice carries 18% GST on top of the item prices. The catalog prices and your quoted subtotals are BEFORE GST. So the invoice GRAND TOTAL (subtotal + 18% GST) must be <= the cap. Concretely: keep the SUBTOTAL at or below (cap / 1.18). Example — cap ₹${Math.min(delegationMax, dailyLimit - dailySpent)} allows an item+upsell SUBTOTAL of at most ₹${Math.floor(Math.min(delegationMax, dailyLimit - dailySpent) / 1.18)} before GST (₹${Math.floor(Math.min(delegationMax, dailyLimit - dailySpent) / 1.18 * 0.18)} GST), so the quoted grand total stays under the cap. Always quote and compare against GRAND TOTALS, never raw item prices, when checking the mandate cap. Do not claim a cart is "under budget" unless its GST-inclusive grand total fits.`; 
     }
 
