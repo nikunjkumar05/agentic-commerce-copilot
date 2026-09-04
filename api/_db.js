@@ -1,5 +1,6 @@
 import { Pool, neonConfig } from '@neondatabase/serverless';
 import ws from 'ws';
+import fs from 'fs';
 
 // Neon Serverless WebSocket disconnect handler
 neonConfig.webSocketConstructor = class SilentWebSocket extends ws {
@@ -285,4 +286,33 @@ export async function initDb() {
       BEGIN EXECUTE 'ALTER TABLE campaigns ALTER COLUMN budget_cap TYPE NUMERIC(12,2) USING budget_cap::NUMERIC(12,2)'; EXCEPTION WHEN others THEN null; END;
     END $$;
   `);
+
+  // Auto-seed default catalog from agent-catalog.json if products table is fresh
+  try {
+    for (const p of ['../public/.well-known/agent-catalog.json', 'public/.well-known/agent-catalog.json']) {
+      try {
+        const catalogPath = new URL(p, import.meta.url);
+        if (fs.existsSync(catalogPath)) {
+          const raw = fs.readFileSync(catalogPath, 'utf8').replace(/^\uFEFF/, '');
+          const { catalog } = JSON.parse(raw);
+          if (Array.isArray(catalog)) {
+            const userRes = await query("SELECT id FROM users WHERE role = 'merchant' LIMIT 1");
+            const merchantId = userRes.rows[0]?.id || (await query('SELECT id FROM users LIMIT 1')).rows[0]?.id || '00000000-0000-0000-0000-000000000001';
+            for (const item of catalog) {
+              const marginFloor = Math.round(item.price * 0.8);
+              await query(
+                `INSERT INTO products (id, user_id, sku, name, description, price, margin_floor, hsn_code)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 ON CONFLICT (id) DO NOTHING`,
+                [item.id, merchantId, item.id, item.name, item.description, item.price, marginFloor, item.hsn_code || '998313']
+              );
+            }
+            break;
+          }
+        }
+      } catch {}
+    }
+  } catch (err) {
+    console.warn('[DB] Failed to auto-seed default catalog:', err.message);
+  }
 }
