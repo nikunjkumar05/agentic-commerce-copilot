@@ -2273,12 +2273,12 @@ app.post('/api/campaigns/:id/launch', authMiddleware, async (req, res) => {
     const grand_total = subtotal + tax_total;
     
     await query(`
-      INSERT INTO invoices (id, user_id, invoice_number, institution_name, institution_address, gst_number,
+      INSERT INTO invoices (id, user_id, buyer_id, invoice_number, institution_name, institution_address, gst_number,
         recipient_name, recipient_address, recipient_gst, line_items, subtotal, tax_total, grand_total,
         currency, status, is_ai_upsell, campaign_id, invoice_date, due_date)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
     `, [
-      newId, req.user.id, newInvNo,
+      newId, req.user.id, inv.buyer_id, newInvNo,
       inv.institution_name, inv.institution_address, inv.gst_number,
       inv.recipient_name, inv.recipient_address, inv.recipient_gst,
       JSON.stringify(items), subtotal, tax_total, grand_total,
