@@ -1,0 +1,91 @@
+{
+  "started_at": "2026-09-03T23:22:33.464Z",
+  "offline": [
+    {
+      "name": "hmac_accepts genuine signature",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "hmac_rejects forged signature",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "hmac_rejects missing signature",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "hmac_fail_closed without secret",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "checkout_sig_accepts genuine",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "checkout_sig_rejects cross-order replay",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "inter-state yields pure IGST",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "intra-state splits CGST+SGST conserving total",
+      "pass": true,
+      "detail": "cgst=900 sgst=900"
+    },
+    {
+      "name": "odd-paise rounding still conserves",
+      "pass": true,
+      "detail": "cgst=9 sgst=9.18"
+    },
+    {
+      "name": "missing GSTIN defaults intra-state (fail-safe, never IGST by guess)",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "ledger_canonical: \"5000.00\" hashes as 5000",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "ledger_canonical: 0 and null hash identically (legacy || semantics)",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "ledger_canonical: distinct amounts hash distinctly",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "webhook_idempotency_key deterministic",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "webhook_idempotency_key separates events",
+      "pass": true,
+      "detail": null
+    }
+  ],
+  "live": [],
+  "skipped": [],
+  "skipped_live": true,
+  "summary": {
+    "total": 15,
+    "passed": 15,
+    "adversarial_blocked": 0,
+    "adversarial_total": 0,
+    "false_blocks": 0,
+    "pass": true
+  }
+}

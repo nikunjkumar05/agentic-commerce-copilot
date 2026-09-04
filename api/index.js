@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import { query, initDb, withTransaction } from './_db.js';
 import { generateToken, authMiddleware } from './_auth.js';
+import { registerGapAgents } from './gaps.js';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 
@@ -1300,6 +1301,45 @@ app.post('/api/checkout/order', authMiddleware, agentBuyRateLimiter, async (req,
 
 // The buyer agent completes the 402 challenge: pays the merchant's order S2S.
 // --- REAL A2A PROTOCOL (x402) ---
+
+// Verify client-side Razorpay payment and mark invoice paid.
+// Called immediately after the Razorpay JS handler fires so the invoice is
+// marked paid even when the webhook cannot reach localhost in development.
+app.post('/api/checkout/verify', authMiddleware, async (req, res) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    return res.status(400).json({ error: 'bad_request', message: 'Missing Razorpay verification fields' });
+  }
+
+  const valid = verifySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature);
+  if (!valid) return res.status(400).json({ error: 'invalid_signature', message: 'Payment signature verification failed' });
+
+  // Find invoice by the order_id stored in tx_hash
+  const invRes = await query(
+    'SELECT id, user_id, invoice_number, grand_total, status FROM invoices WHERE tx_hash = $1 LIMIT 1',
+    [razorpay_order_id]
+  );
+  if (invRes.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'No invoice linked to this order' });
+  const inv = invRes.rows[0];
+
+  if (inv.status === 'paid') return res.json({ success: true, already_paid: true, invoice_id: inv.id });
+
+  await query(
+    "UPDATE invoices SET status = 'paid', tx_hash = $1, payment_method = 'razorpay_checkout', updated_date = NOW() WHERE id = $2",
+    [razorpay_payment_id, inv.id]
+  );
+
+  await appendAuditLog(req.user.id, {
+    action: 'settlement_verified',
+    invoice_id: inv.id,
+    invoice_number: inv.invoice_number,
+    amount: inv.grand_total,
+    tx_hash: razorpay_payment_id,
+    details: `Client-side Razorpay payment verified. Order ${razorpay_order_id}, Payment ${razorpay_payment_id}.`
+  });
+
+  res.json({ success: true, invoice_id: inv.id, payment_id: razorpay_payment_id });
+});
 
 app.get('/api/agent/v1/catalog', authMiddleware, async (req, res) => {
   const products = await query('SELECT sku, name, description, price, hsn_code FROM products');
@@ -2871,6 +2911,9 @@ app.get('/api/apps/public/prod/public-settings/by-id/:appId', async (req, res) =
   }
   res.json({ id: req.params.appId, public_settings: {} });
 });
+
+// --- Gap agents #1 (sellability) + #5 (liability): additive only ---
+registerGapAgents(app, { query, appendAuditLog, authMiddleware });
 
 // --- Error handler ---
 app.use((err, req, res, next) => {

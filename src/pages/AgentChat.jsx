@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import ReactMarkdown from 'react-markdown';
 import { Send, Package, FileText, CheckCircle, Shield, Loader2, Wrench } from 'lucide-react';
 import { toast } from 'sonner';
 import { db } from '@/services/db';
@@ -117,6 +118,79 @@ const [fallbackMode, setFallbackMode] = useState(false);
     }
   };
 
+  // Opens Razorpay checkout modal in-tab. On success, auto-flips the widget to payment_done.
+  const openRazorpayCheckout = async (msg) => {
+    const { id: invoiceId, invoice_uuid, order_id: existingOrderId } = msg.uiData || {};
+    const resolvedInvoiceId = invoiceId || invoice_uuid;
+
+    try {
+      // Get/create a Razorpay order for this invoice
+      const token = localStorage.getItem('app_access_token');
+      const orderRes = await fetch('/api/checkout/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ invoice_id: resolvedInvoiceId })
+      });
+      const orderData = await orderRes.json();
+      if (!orderRes.ok) {
+        // If there's already a payment link (from escalation), fall back to that
+        if (msg.uiData.payment_link_url) {
+          window.open(msg.uiData.payment_link_url, '_blank');
+          return;
+        }
+        toast.error(orderData.message || 'Could not create order');
+        return;
+      }
+
+      const options = {
+        key: import.meta.env.VITE_RAZORPAY_KEY_ID,
+        order_id: orderData.order_id,
+        amount: orderData.amount,
+        currency: orderData.currency || 'INR',
+        name: 'AgentPay Gateway',
+        description: `Invoice ${resolvedInvoiceId?.slice(0, 8)}`,
+        modal: { ondismiss: () => {} },
+        handler: async (response) => {
+          try {
+            // Verify signature server-side and mark invoice paid in DB.
+            // This covers localhost dev where webhooks cannot reach us.
+            const token = localStorage.getItem('app_access_token');
+            await fetch('/api/checkout/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              })
+            });
+          } catch (_) {}
+          toast.success('Payment successful!');
+          setMessages(prev => prev.map(m => {
+            if (m === msg) {
+              return {
+                ...m,
+                uiType: 'payment_done',
+                content: 'Payment completed successfully.',
+                uiData: { id: resolvedInvoiceId, tx_id: response.razorpay_payment_id }
+              };
+            }
+            return m;
+          }));
+        },
+      };
+
+      if (!window.Razorpay) {
+        toast.error('Razorpay SDK not loaded. Please refresh the page.');
+        return;
+      }
+      const rzp = new window.Razorpay(options);
+      rzp.open();
+    } catch (err) {
+      toast.error(err.message || 'Could not open checkout');
+    }
+  };
+
   // 2. Save to LocalStorage whenever messages change
   useEffect(() => {
     localStorage.setItem('agent_chat_history', JSON.stringify(messages));
@@ -173,6 +247,53 @@ const [fallbackMode, setFallbackMode] = useState(false);
       }
     }).catch(() => {});
   }, [lastInvoiceId, messages.length]);
+
+  // 4. Auto-poll for pending human checkout completion (2 minute window)
+  useEffect(() => {
+    const pendingWidget = [...messages].reverse().find(m => m.uiType === 'checkout_inline' || m.uiType === 'payment_escalated');
+    if (!pendingWidget || !pendingWidget.uiData) return;
+
+    const invoiceId = pendingWidget.uiData.id || pendingWidget.uiData.invoice_uuid || pendingWidget.uiData.order_id;
+    if (!invoiceId) return;
+
+    let attempts = 0;
+    const maxAttempts = 24; // 24 * 5s = 120s = 2 minutes
+
+    const interval = setInterval(async () => {
+      attempts++;
+      try {
+        const token = localStorage.getItem('app_access_token');
+        if (!token) return;
+        const res = await fetch(`/api/invoices/${invoiceId}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const inv = await res.json();
+          if (inv.status === 'paid') {
+            clearInterval(interval);
+            toast.success('Payment automatically confirmed!');
+            setMessages(prev => prev.map(m => {
+              if (m === pendingWidget) {
+                return {
+                  ...m,
+                  uiType: 'payment_done',
+                  content: 'Payment has been successfully completed.',
+                  uiData: { id: inv.id, tx_id: inv.tx_hash || inv.id }
+                };
+              }
+              return m;
+            }));
+          }
+        }
+      } catch (e) {}
+
+      if (attempts >= maxAttempts) {
+        clearInterval(interval);
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [messages]);
 
   const handleSend = async (e) => {
     e?.preventDefault();
@@ -637,7 +758,13 @@ const [fallbackMode, setFallbackMode] = useState(false);
             <div className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} max-w-[80%]`}>
               {msg.content && (
                 <div className={`px-4 py-3 rounded-2xl text-sm shadow-sm ${msg.role === 'user' ? 'bg-muted text-foreground rounded-tr-sm' : 'bg-card border rounded-tl-sm'}`}>
-                  {msg.content}
+                  {msg.role === 'user' ? (
+                    msg.content
+                  ) : (
+                    <div className="[&>p]:mb-2 last:[&>p]:mb-0 [&>ul]:list-disc [&>ul]:ml-5 [&>ul]:mb-2 [&>ol]:list-decimal [&>ol]:ml-5 [&>ol]:mb-2 [&_li]:mb-1 [&_strong]:font-bold [&_em]:italic [&>h1]:text-lg [&>h1]:font-bold [&>h1]:mb-2 [&>h2]:text-base [&>h2]:font-bold [&>h2]:mb-2 [&>h3]:text-sm [&>h3]:font-bold [&>h3]:mb-1 [&>h4]:text-sm [&>h4]:font-bold [&>h4]:mb-1 [&_a]:text-primary [&_a]:underline [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-[13px] [&_code]:font-mono [&>pre]:bg-muted [&>pre]:p-2 [&>pre]:rounded-lg [&>pre]:overflow-x-auto [&>pre]:mb-2 [&>pre_code]:bg-transparent [&>pre_code]:p-0">
+                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    </div>
+                  )}
                 </div>
               )}
               {msg.tool_calls && msg.tool_calls.length > 0 && (
@@ -758,7 +885,15 @@ const [fallbackMode, setFallbackMode] = useState(false);
                       </Button>
                       <div className="flex gap-2">
                         <Button variant="outline" size="sm" className="flex-1" onClick={() => navigate(`/invoice/${msg.uiData.id}`)}>
-                          View Full Details
+                          View Details
+                        </Button>
+                        <Button variant="outline" size="sm" className="flex-1" onClick={async () => {
+                          try {
+                            const inv = await db.entities.Invoice.read(msg.uiData.id);
+                            if (inv) generateInvoicePDF(inv);
+                          } catch { toast.error('Could not download PDF'); }
+                        }}>
+                          Download PDF
                         </Button>
                         <Button variant="ghost" size="sm" className="flex-1 text-red-500 hover:text-red-700 hover:bg-red-50" onClick={async () => {
                           const token = localStorage.getItem('app_access_token');
@@ -773,7 +908,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                             toast.error('Failed to delete draft');
                           }
                         }}>
-                          Reject Draft
+                          Reject
                         </Button>
                       </div>
                     </div>
@@ -785,7 +920,9 @@ const [fallbackMode, setFallbackMode] = useState(false);
                 <div className="w-full mt-2 animate-in fade-in slide-in-from-bottom-2 duration-500">
                   <div className="p-4 bg-green-50 border border-green-200 rounded-xl space-y-3 shadow-sm">
                     <div className="flex items-center gap-2">
-                       <div className="w-6 h-6 rounded-full bg-green-500 text-white flex items-center justify-center text-xs shadow-sm">âœ“</div>
+                       <div className="w-6 h-6 rounded-full bg-green-500 text-white flex items-center justify-center shadow-sm">
+                         <CheckCircle className="w-4 h-4" />
+                       </div>
                        <span className="text-sm font-bold text-green-800">Payment Successful</span>
                     </div>
                     {msg.uiData.tx_id && (
@@ -815,54 +952,25 @@ const [fallbackMode, setFallbackMode] = useState(false);
               )}
 
               {msg.uiType === 'checkout_inline' && msg.uiData && (
-                <div className="w-full mt-2 max-w-sm mx-auto animate-in fade-in slide-in-from-bottom-2 duration-500">
+                <div className="w-full mt-2 max-w-sm animate-in fade-in slide-in-from-bottom-2 duration-500">
                   <div className="bg-white border rounded-2xl shadow-lg overflow-hidden">
                     <div className="p-4 border-b bg-gray-50 flex items-center justify-between">
                       <div>
-                        <div className="text-xs font-medium text-gray-500">Order ID</div>
-                        <div className="font-mono font-bold text-sm">{msg.uiData.order_id}</div>
+                        <div className="text-xs font-medium text-gray-500">Human Checkout Required</div>
+                        <div className="font-mono font-bold text-sm">{msg.uiData.order_id || 'Invoice'}</div>
                       </div>
-                      <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">Pending</Badge>
+                      <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">Awaiting Payment</Badge>
                     </div>
-                    <div className="p-6 flex flex-col items-center">
-                      <div className="p-2 bg-white rounded-xl shadow-sm border border-gray-100 mb-4 inline-block">
-                        <img src={msg.uiData.qr} alt="Scan to pay" className="w-40 h-40" />
-                      </div>
-                      <p className="text-sm text-gray-600 mb-6 text-center">
-                        Scan with your UPI app or click the button below to complete the payment via Razorpay.
+                    <div className="p-5 flex flex-col gap-3">
+                      <p className="text-xs text-gray-500 text-center">
+                        The agent has escalated this to human checkout. Click below to pay securely via Razorpay — the chat will update automatically once payment is confirmed.
                       </p>
-                      <div className="flex flex-col w-full gap-2">
-                        <Button className="w-full bg-[#3395ff] hover:bg-[#2b7ee5] text-white shadow-md font-bold h-11" onClick={() => window.open(msg.uiData.payment_link_url, '_blank')}>
-                          Open Razorpay Checkout
-                        </Button>
-                        <div className="flex gap-2 w-full">
-                          <Button variant="outline" className="flex-1 h-11 font-medium" onClick={() => {
-                            navigator.clipboard.writeText(msg.uiData.payment_link_url);
-                            toast.success('Payment link copied to clipboard');
-                          }}>
-                            Copy Link
-                          </Button>
-                          <Button variant="outline" className="flex-1 h-11 font-medium border-indigo-200 text-indigo-700 hover:bg-indigo-50" onClick={async () => {
-                            try {
-                              const res = await fetch(`/api/invoices/${msg.uiData.id || msg.uiData.invoice_uuid || msg.uiData.order_id}`, {
-                                headers: { Authorization: `Bearer ${localStorage.getItem('app_access_token')}` }
-                              });
-                              if (!res.ok) throw new Error();
-                              const updatedInvoice = await res.json();
-                              if (updatedInvoice.status === 'paid') {
-                                toast.success('Payment confirmed!');
-                                window.location.reload();
-                              } else {
-                                toast.info('Payment still pending. Please complete the checkout.');
-                              }
-                            } catch (e) {
-                              toast.error('Failed to check status');
-                            }
-                          }}>
-                            Check Status
-                          </Button>
-                        </div>
-                      </div>
+                      <Button
+                        className="w-full bg-[#3395ff] hover:bg-[#2b7ee5] text-white shadow-md font-bold h-11"
+                        onClick={() => openRazorpayCheckout(msg)}
+                      >
+                        Pay Now via Razorpay
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -876,10 +984,10 @@ const [fallbackMode, setFallbackMode] = useState(false);
                        <span className="text-sm font-bold text-amber-800">Escalated to Human</span>
                     </div>
                     <div className="text-xs text-amber-700">
-                      The agent does not have a mandate token to pay autonomously. A secure Razorpay Payment Link has been generated.
+                      The agent does not have a mandate token to pay autonomously.
                     </div>
                     <div className="flex gap-2">
-                      <Button size="sm" className="flex-1 bg-amber-600 hover:bg-amber-700 text-white text-xs h-8 shadow-sm" onClick={() => window.open(msg.uiData.payment_link_url, '_blank')}>
+                      <Button size="sm" className="flex-1 bg-amber-600 hover:bg-amber-700 text-white text-xs h-8 shadow-sm" onClick={() => openRazorpayCheckout(msg)}>
                         Pay Now
                       </Button>
                       <Button size="sm" variant="outline" className="flex-1 text-xs h-8" onClick={() => navigate(`/invoice/${msg.uiData.id}`)}>
@@ -907,7 +1015,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                 </div>
               )}
 
-              {msg.uiType === 'settlement_complete' && msg.uiData && (
+              {(msg.uiType === 'settlement_complete' || msg.uiType === 'payment_done') && msg.uiData && (
                 <div className="w-full mt-2 p-3 bg-card border rounded-lg flex items-center gap-3">
                   <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center">
                     <CheckCircle className="w-4 h-4 text-green-600" />

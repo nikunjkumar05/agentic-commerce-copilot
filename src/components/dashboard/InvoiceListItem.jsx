@@ -10,6 +10,7 @@ const statusConfig = {
   stored: { label: 'On IPFS', className: 'text-success bg-success/10' },
   paid: { label: 'Paid', className: 'text-success bg-success/10' },
   anomaly: { label: 'Anomaly', className: 'text-destructive bg-destructive/10' },
+  pending: { label: 'Pending', className: 'text-blue-500 bg-blue-50' },
 };
 
 function formatCurrency(amount, currency = 'INR') {

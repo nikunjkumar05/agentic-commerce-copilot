@@ -16,7 +16,7 @@ export default function BuyerOrders() {
     queryFn: () => db.entities.Invoice.list('-created_date', 100),
   });
 
-  const draftInvoices = invoices.filter(inv => inv.status === 'draft');
+  const draftInvoices = invoices.filter(inv => inv.status === 'draft' || inv.status === 'pending');
   const completedOrders = invoices.filter(inv => inv.status === 'paid' || inv.status === 'validated');
 
   const displayedInvoices = tab === 'drafts' 
@@ -104,13 +104,29 @@ export default function BuyerOrders() {
                           </div>
                         </div>
                         <div className="mt-3 flex items-center gap-2 flex-wrap">
-                          {isDraft ? (
+                          {order.status === 'draft' && (
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-200">
                               <Clock className="w-3 h-3" /> Draft • Awaiting Settlement
                             </span>
-                          ) : (
+                          )}
+                          {order.status === 'pending' && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 border border-blue-200">
+                              <Clock className="w-3 h-3" /> Pending
+                            </span>
+                          )}
+                          {order.status === 'paid' && (
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-800 border border-green-200">
                               <CheckCircle2 className="w-3 h-3" /> Paid
+                            </span>
+                          )}
+                          {order.status === 'validated' && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-100 text-purple-800 border border-purple-200">
+                              <CheckCircle2 className="w-3 h-3" /> Validated
+                            </span>
+                          )}
+                          {order.status === 'anomaly' && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-800 border border-red-200">
+                              <Clock className="w-3 h-3" /> Anomaly
                             </span>
                           )}
                           {order.is_ai_upsell && (

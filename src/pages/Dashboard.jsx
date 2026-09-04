@@ -52,7 +52,7 @@ export default function Dashboard() {
   // NOTE: grand_total may arrive as a string (NUMERIC columns) — Number() first,
   // otherwise `0 + "125.00"` concatenates and the total renders as NaN.
   const totalValue = invoices.reduce((sum, inv) => sum + (Number(inv.grand_total) || 0), 0);
-  const pendingCount = invoices.filter(i => ['draft', 'validated'].includes(i.status)).length;
+  const pendingCount = invoices.filter(i => ['draft', 'validated', 'pending'].includes(i.status)).length;
   
   // Track AI Revenue Lift — only PAID invoices count as revenue (a draft or
   // anomaly invoice is not money earned). Agent-settled = paid via Razorpay

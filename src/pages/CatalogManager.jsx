@@ -4,7 +4,92 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
-import { Plus, Trash2, Package, Tag } from 'lucide-react';
+import { Plus, Trash2, Package, Tag, Sparkles, Loader2 } from 'lucide-react';
+
+const authHeaders = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('app_access_token')}` });
+
+function SellabilityPanel({ catalog }) {
+  const queryClient = useQueryClient();
+  const [showJsonLd, setShowJsonLd] = useState(false);
+  const { data: score, isLoading } = useQuery({
+    queryKey: ['sellability'],
+    queryFn: async () => {
+      const res = await fetch('/api/merchant/sellability', { headers: authHeaders() });
+      if (!res.ok) throw new Error('Failed to load sellability score');
+      return res.json();
+    }
+  });
+  const { data: jsonLd } = useQuery({
+    queryKey: ['sellability-jsonld'],
+    enabled: showJsonLd,
+    queryFn: async () => {
+      const res = await fetch('/api/merchant/sellability/jsonld');
+      if (!res.ok) throw new Error('Failed to load JSON-LD');
+      return res.json();
+    }
+  });
+  const fixMutation = useMutation({
+    mutationFn: async () => {
+      const missing = (catalog || []).filter((p) => !p.hsn_code).map((p) => ({ id: p.id, hsn_code: '998313' }));
+      if (missing.length === 0) throw new Error('Nothing to auto-fix');
+      const res = await fetch('/api/merchant/sellability/fix', {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ updates: missing })
+      });
+      if (!res.ok) throw new Error('Auto-fix failed');
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['sellability'] });
+      queryClient.invalidateQueries({ queryKey: ['catalog'] });
+      toast.success(`Auto-fix applied: ${data.fixed} edited, ${data.hsn_defaulted} HSN defaulted. Score ${data.score}/100`);
+    },
+    onError: (e) => toast.error(e.message || 'Auto-fix failed')
+  });
+  const missingHsn = (catalog || []).filter((p) => !p.hsn_code).length;
+
+  return (
+    <Card className="border-emerald-200 shadow-sm">
+      <CardHeader>
+        <CardTitle className="text-lg flex items-center gap-2">
+          <Sparkles className="w-5 h-5 text-emerald-600" /> AI-Sellability Score
+          {!isLoading && score && (
+            <span className="ml-auto font-mono text-2xl font-bold text-emerald-700">{score.score}<span className="text-sm text-muted-foreground">/100</span></span>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground animate-pulse">Scanning catalog for AI-readiness...</p>
+        ) : score ? (
+          <>
+            <p className="text-sm text-muted-foreground">{score.product_count} products scanned. {score.issues?.length || 0} need fixes.</p>
+            {(score.issues || []).slice(0, 5).map((issue, i) => (
+              <div key={i} className="text-sm bg-amber-500/10 border border-amber-500/30 rounded-md p-2">
+                <p className="font-bold">{issue.name || issue.sku || 'Unnamed product'}</p>
+                <ul className="list-disc ml-5 text-muted-foreground">{issue.fixes.map((f, j) => <li key={j}>{f}</li>)}</ul>
+              </div>
+            ))}
+            {(score.questions || []).map((q, i) => <p key={i} className="text-sm text-blue-700">💬 {q}</p>)}
+            <div className="flex gap-2 flex-wrap">
+              <Button size="sm" onClick={() => fixMutation.mutate()} disabled={fixMutation.isPending || missingHsn === 0}>
+                {fixMutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                {missingHsn === 0 ? 'Catalog is AI-ready' : `Auto-fix ${missingHsn} missing HSN`}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setShowJsonLd((v) => !v)}>
+                {showJsonLd ? 'Hide JSON-LD' : 'View JSON-LD (what AI buyers read)'}
+              </Button>
+            </div>
+            {showJsonLd && (
+              <pre className="text-[10px] font-mono bg-slate-900 text-slate-200 rounded-md p-3 max-h-64 overflow-auto">
+                {jsonLd ? JSON.stringify(jsonLd, null, 2) : 'Loading...'}
+              </pre>
+            )}
+          </>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function CatalogManager() {
   const queryClient = useQueryClient();
@@ -140,6 +225,8 @@ export default function CatalogManager() {
           </CardContent>
         </Card>
       )}
+
+      <SellabilityPanel catalog={catalog} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {catalog.map(product => (
