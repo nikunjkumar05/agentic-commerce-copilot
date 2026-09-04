@@ -57,7 +57,11 @@ export const db = {
         method: 'POST',
         body: JSON.stringify({ email, password, role })
       });
-      if (data.access_token) localStorage.setItem('app_access_token', data.access_token);
+      if (data.access_token) {
+        localStorage.setItem(roleTokenKey(role), data.access_token);
+        localStorage.setItem('app_access_token', data.access_token);
+        localStorage.setItem('current_role', role);
+      }
       return data;
     },
     loginWithProvider: (provider, redirectUrl) => {

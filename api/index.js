@@ -32,7 +32,12 @@ export async function appendAuditLog(userId, data) {
       [userId]
     );
     const prev_hash = lastLog.rows.length > 0 && lastLog.rows[0].hash ? lastLog.rows[0].hash : '0'.repeat(64);
-    const timestamp = data.created_date || new Date().toISOString();
+    // Normalize to UTC ISO with 3ms + Z so hash is timezone-free (India IST vs server UTC both hash identically)
+    const rawTs = data.created_date || new Date().toISOString();
+    const timestamp = (() => {
+      const d = new Date(rawTs);
+      return isNaN(d) ? new Date().toISOString() : d.toISOString();
+    })();
 
     // 2. Insert row to get the auto-generated sequence_num
     const insertRes = await client.query(`
@@ -195,13 +200,17 @@ async function enforceBudget(userId, amount, delegation_max) {
     };
   }
 
-  // Atomic Reservation: bump the counter ONLY if it won't exceed the limit
+  // Atomic Reservation: bump the counter ONLY if it won't exceed the limit.
+  // Always stamp `daily_reset_date = today` so the daily-reset guard in
+  // countSpentToday()/checkout sees this row already counted today — otherwise
+  // the first webhook/verify completion later in the day would RESET the
+  // counter and wipe this reserved amount off the "Total spent" bar.
   const reserveRes = await query(
     `UPDATE users 
-     SET agent_daily_spent = agent_daily_spent + $1 
-     WHERE id = $2 AND (agent_daily_limit = 0 OR agent_daily_spent + $1 <= agent_daily_limit) 
+     SET agent_daily_spent = agent_daily_spent + $1, daily_reset_date = $2 
+     WHERE id = $3 AND (agent_daily_limit = 0 OR agent_daily_spent + $1 <= agent_daily_limit) 
      RETURNING agent_daily_limit, agent_daily_spent`,
-    [numAmount, userId]
+    [numAmount, today, userId]
   );
 
   if (reserveRes.rowCount === 0) {
@@ -240,6 +249,24 @@ async function refundBudget(userId, amount) {
     );
   } catch (e) {
     console.error('[BUDGET] refund failed:', e?.message);
+  }
+}
+
+/** Count an actually-settled amount toward "spent today" for the WHO pays.
+ * Mirrors the reserve in enforceBudget(), but runs only once real money has
+ * cleared (webhook / verified checkout), keyed off the invoice OWNER rather
+ * than whichever caller happened to trigger the completion — otherwise a
+ * buyer settling a merchant's invoice would credit the wrong account. */
+async function countSpentToday(userId, amount) {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    await query(
+      'UPDATE users SET agent_daily_spent = 0, daily_reset_date = $1 WHERE id = $2 AND daily_reset_date IS DISTINCT FROM $1',
+      [today, userId]
+    ).catch(() => {});
+    await query('UPDATE users SET agent_daily_spent = agent_daily_spent + $1 WHERE id = $2', [Number(amount) || 0, userId]).catch(() => {});
+  } catch (e) {
+    console.error('[BUDGET] countSpentToday failed:', e?.message);
   }
 }
 
@@ -667,6 +694,11 @@ app.post('/api/auth/forgot-password', (req, res) => res.json({ success: true }))
 app.post('/api/auth/reset-password', (req, res) => res.json({ success: true }));
 
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  await query(
+    'UPDATE users SET agent_daily_spent = 0, daily_reset_date = $1 WHERE id = $2 AND daily_reset_date IS DISTINCT FROM $1',
+    [today, req.user.id]
+  );
   const result = await query(
     'SELECT id, email, name, role, created_at, agent_delegation_max, agent_daily_limit, agent_daily_spent, daily_reset_date, razorpay_customer_id, razorpay_token_id FROM users WHERE id = $1',
     [req.user.id]
@@ -835,18 +867,38 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
   const today = new Date().toISOString().split('T')[0];
   const dueDefault = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
 
-  let buyerId = data.buyer_id || null;
-  if (!buyerId && data.recipient_name) {
-    try {
-      const matched = await query(
-        'SELECT id FROM users WHERE LOWER(name) = LOWER($1) OR LOWER(email) = LOWER($1) LIMIT 1',
-        [data.recipient_name.trim()]
-      );
-      if (matched.rows.length > 0) {
-        buyerId = matched.rows[0].id;
+  // Ownership model: buyer-created invoices belong to the STORE they were
+  // bought from — user_id = the chosen merchant (sees them on the dashboard,
+  // campaigns, transcripts), buyer_id = the logged-in buyer (sees them in My
+  // Orders and can pay/update them). Merchant-created invoices keep the
+  // legacy shape: user_id = creator, buyer_id resolved from recipient_name.
+  const merchantId = data.merchant_id ? String(data.merchant_id) : null;
+  let sellerId = merchantId;
+  let buyerId = null;
+  if (merchantId) {
+    const ownerRes = await query('SELECT id FROM users WHERE id = $1', [merchantId]);
+    if (ownerRes.rows.length > 0) {
+      buyerId = req.user.id;
+    } else {
+      sellerId = null; // unknown merchant id — fall through to legacy ownership
+    }
+  }
+  if (!sellerId) {
+    sellerId = req.user.id;
+    if (data.buyer_id) {
+      buyerId = data.buyer_id;
+    } else if (data.recipient_name) {
+      try {
+        const matched = await query(
+          'SELECT id FROM users WHERE LOWER(name) = LOWER($1) OR LOWER(email) = LOWER($1) LIMIT 1',
+          [data.recipient_name.trim()]
+        );
+        if (matched.rows.length > 0) {
+          buyerId = matched.rows[0].id;
+        }
+      } catch (e) {
+        console.warn('Could not resolve buyer_id for invoice:', e.message);
       }
-    } catch (e) {
-      console.warn('Could not resolve buyer_id for invoice:', e.message);
     }
   }
 
@@ -857,7 +909,7 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
       invoice_date, due_date, milestones, is_ai_upsell)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
   `, [
-    id, req.user.id, buyerId,
+    id, sellerId, buyerId,
     data.invoice_number || `INV-${Math.floor(Math.random() * 100000)}`,
     data.institution_name || 'Agentic Commerce Co-Pilot', data.institution_address || 'New Delhi, India', data.gst_number || '07AAACN0372J1ZB',
     data.recipient_name || null, data.recipient_address || null, data.recipient_gst || null,
@@ -874,7 +926,7 @@ app.post('/api/invoices', authMiddleware, async (req, res) => {
 });
 
 app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
-  const exists = await query('SELECT id, status AS old_status FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [req.params.id, req.user.id]);
+  const exists = await query('SELECT id, status AS old_status FROM invoices WHERE (id = $1 OR invoice_number = $1) AND (user_id = $2 OR buyer_id = $2)', [req.params.id, req.user.id]);
   if (exists.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   const internalId = exists.rows[0].id;
   const oldStatus = exists.rows[0].old_status;
@@ -1006,14 +1058,14 @@ app.put('/api/invoices/:id', authMiddleware, async (req, res) => {
 });
 
 app.delete('/api/invoices/:id', authMiddleware, async (req, res) => {
-  const exists = await query('SELECT id, status FROM invoices WHERE (id = $1 OR invoice_number = $1) AND user_id = $2', [req.params.id, req.user.id]);
+  const exists = await query('SELECT id, status FROM invoices WHERE (id = $1 OR invoice_number = $1) AND (user_id = $2 OR buyer_id = $2)', [req.params.id, req.user.id]);
   if (exists.rows.length === 0) return res.status(404).json({ error: 'not_found', message: 'Invoice not found' });
   // Financial evidence must not be deletable: paid/processing invoices are
   // immutable (funnel joins and audit references would break silently).
   if (['paid', 'processing'].includes(exists.rows[0].status)) {
     return res.status(409).json({ error: 'immutable_invoice', message: `Invoice with status '${exists.rows[0].status}' cannot be deleted.` });
   }
-  await query('DELETE FROM invoices WHERE id = $1 AND user_id = $2', [exists.rows[0].id, req.user.id]);
+  await query('DELETE FROM invoices WHERE id = $1 AND (user_id = $2 OR buyer_id = $2)', [exists.rows[0].id, req.user.id]);
   res.json({ success: true });
 });
 
@@ -1087,9 +1139,10 @@ app.post('/api/audit-logs', authMiddleware, async (req, res) => {
 
 app.get('/api/audit-logs/verify', authMiddleware, async (req, res) => {
   // Fetch all logs in strict chronological order to verify the chain.
-  // created_date::text gives the raw UTC wall-clock that was originally hashed —
-  // parsing it as a JS Date would apply the server's timezone (TIMESTAMP WITHOUT
-  // TIME ZONE) and break hash recomputation on non-UTC machines.
+  // TIMESTAMP WITHOUT TIME ZONE loses offset — we stored UTC ISO, so the
+  // raw `created_date::text` is the UTC wall-clock. Rehydrating via
+  // `new Date(ts).toISOString()` would fail on non-ISO legacy rows, so we
+  // normalize with a UTC-aware `toUtcIso` (space→T, ms-padded, Z).
   const result = await query(
     `SELECT id, user_id, action, invoice_id, invoice_number, amount, agent_address, owner_address, tx_hash, details, prev_hash, hash, sequence_num, created_date::text AS created_ts
      FROM audit_logs WHERE user_id = $1 ORDER BY sequence_num ASC, created_date ASC, id ASC`,
@@ -1099,15 +1152,20 @@ app.get('/api/audit-logs/verify', authMiddleware, async (req, res) => {
   const logs = result.rows;
   if (logs.length === 0) return res.json({ valid: true, entries_verified: 0, message: 'No logs to verify.' });
 
-  // Reconstruct the exact ISO string the hash was originally computed over:
-  // "2026-08-30 20:24:01.311" → "2026-08-30T20:24:01.311Z" (UTC, ms-padded)
+  // Reconstruct the exact UTC ISO string the hash was originally computed over:
+  // "2026-08-30 20:24:01.311" → "2026-08-30T20:24:01.311Z" (UTC, ms-padded).
+  // Uses Date UTC parsing when possible so "2026-08-30T20:24:01.31Z" and
+  // "2026-08-30 20:24:01.310" hash identically.
   const toUtcIso = (ts) => {
     if (!ts) return ts;
+    const d = new Date(String(ts).replace(' ', 'T').replace(/Z$/, '') + 'Z');
+    if (!isNaN(d)) return d.toISOString();
     let s = String(ts).replace(' ', 'T');
     const dot = s.indexOf('.');
     if (dot === -1) s += '.000';
     else s = s.slice(0, dot + 1) + s.slice(dot + 1).padEnd(3, '0').slice(0, 3);
-    return s + 'Z';
+    if (!s.endsWith('Z')) s += 'Z';
+    return s;
   };
 
   let expectedPrevHash = '0'.repeat(64);
@@ -1328,6 +1386,11 @@ app.post('/api/checkout/verify', authMiddleware, async (req, res) => {
     "UPDATE invoices SET status = 'paid', tx_hash = $1, payment_method = 'razorpay_checkout', updated_date = NOW() WHERE id = $2",
     [razorpay_payment_id, inv.id]
   );
+
+  // Keep "Today spent" in sync for UI: real money cleared, so count it toward
+  // the daily counter for the invoice OWNER (the payer may differ from the
+  // viewer in A2A flows).
+  await countSpentToday(inv.user_id, inv.grand_total);
 
   await appendAuditLog(req.user.id, {
     action: 'settlement_verified',
@@ -1667,7 +1730,10 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
     const taxAmount = invoice.tax_total || 0;
     const { order } = await createAgentSettlementOrder(invoice.grand_total, invoice.invoice_number, taxAmount, invoiceTaxSplit(invoice));
     
-    await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3 AND user_id = $4', ['pending', order.id, invoice.id, req.user.id]);
+    // Claim guard, not ownership guard: the atomic claim above already matched
+    // this caller's ownership; status='processing' can only be held by us. A
+    // user_id guard here would no-op for BUYERS settling merchant-owned invoices.
+    await query("UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3 AND status = 'processing'", ['pending', order.id, invoice.id]);
 
     await appendAuditLog(req.user.id, {
       action: 'order_created',
@@ -1682,8 +1748,8 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
     // Release the claim AND refund the reservation (mirrors auto-settle) so a
     // Razorpay failure neither wedges the invoice at `processing` nor burns budget.
     await query(
-      "UPDATE invoices SET status = 'pending', updated_date = NOW() WHERE id = $1 AND user_id = $2 AND status = 'processing'",
-      [invoice.id, req.user.id]
+      "UPDATE invoices SET status = 'pending', updated_date = NOW() WHERE id = $1 AND status = 'processing'",
+      [invoice.id]
     );
     await refundBudget(req.user.id, Number(invoice.grand_total));
     console.error(err);
@@ -1833,18 +1899,22 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
 // tokens — that is an explicit, separate, audited operation.
 app.post('/api/user/delegation', authMiddleware, async (req, res) => {
   const { maxAmount, dailyLimit } = req.body;
-  // Caps are money gates: negatives permanently self-DoS (amount > -1 always
-  // blocks), NaN disables nothing predictable, huge values overflow NUMERIC.
-  const maxN = Number(maxAmount), dailyN = dailyLimit != null ? Number(dailyLimit) : null;
-  if (!Number.isFinite(maxN) || maxN < 0 || maxN > 99999999.99) {
+  const hasMax = maxAmount !== undefined && maxAmount !== null && String(maxAmount) !== '';
+  const hasDaily = dailyLimit !== undefined && dailyLimit !== null && String(dailyLimit) !== '';
+  const maxN = hasMax ? Number(maxAmount) : null;
+  const dailyN = hasDaily ? Number(dailyLimit) : null;
+  if (maxN !== null && (!Number.isFinite(maxN) || maxN < 0 || maxN > 99999999.99)) {
     return res.status(400).json({ error: 'invalid_cap', message: 'maxAmount must be between 0 and 99,999,999.99.' });
   }
   if (dailyN !== null && (!Number.isFinite(dailyN) || dailyN < 0 || dailyN > 99999999.99)) {
     return res.status(400).json({ error: 'invalid_cap', message: 'dailyLimit must be between 0 and 99,999,999.99.' });
   }
+  if (maxN === null && dailyN === null) {
+    return res.status(400).json({ error: 'invalid_cap', message: 'Provide maxAmount or dailyLimit to update.' });
+  }
   try {
     await query(
-      "UPDATE users SET agent_delegation_max = $1, agent_daily_limit = COALESCE($2, agent_daily_limit) WHERE id = $3",
+      "UPDATE users SET agent_delegation_max = COALESCE($1, agent_delegation_max), agent_daily_limit = COALESCE($2, agent_daily_limit) WHERE id = $3",
       [maxN, dailyN, req.user.id]
     );
     await appendAuditLog(req.user.id, {
@@ -2368,6 +2438,12 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
       [payment?.id || inv.tx_hash, inv.id]
     );
 
+    // "Total spent today" must move when real money clears, even when the
+    // completion arrives via webhook (manual checkout / escalated payment link)
+    // instead of an autonomous reserve. Keyed to the invoice OWNER — webhooks
+    // carry no authenticated caller, so req.user.id would be wrong here.
+    await countSpentToday(inv.user_id, inv.grand_total);
+
     // Closed-loop: if this invoice was generated by a campaign, count the paid
     // conversion so the Campaign Orchestrator funnel reflects real revenue.
     await bumpCampaignForInvoice(inv.id, 'paid');
@@ -2404,10 +2480,59 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// --- LLM ---
-const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
-const MISTRAL_MODEL = process.env.MISTRAL_MODEL || 'mistral-small-latest';
+// --- LLM --- (Mistral-only, 2-key sharding: chat and invoice each get their
+// own quota; 429/5xx fails over to the other key once)
 const MISTRAL_URL = 'https://api.mistral.ai/v1/chat/completions';
+const MISTRAL_MODEL = process.env.MISTRAL_MODEL || 'open-mistral-7b';
+const MISTRAL_KEYS = [process.env.MISTRAL_API_KEY, process.env.MISTRAL_API_KEY_2]
+  .map((k) => (k && String(k).trim() ? String(k).trim() : null))
+  .filter(Boolean);
+
+const hasAnyLLMKey = () => MISTRAL_KEYS.length > 0;
+
+// Slot order: chat burns quota fastest, so it leads with key 1; invoice leads with key 2.
+function mistralKeysFor(slot) {
+  const [k1, k2] = MISTRAL_KEYS;
+  return slot === 'invoice' ? [k2, k1].filter(Boolean) : [k1, k2].filter(Boolean);
+}
+
+async function postMistral(slot, body, timeoutMs) {
+  const keys = mistralKeysFor(slot);
+  if (keys.length === 0) throw new Error('No MISTRAL_API_KEY configured');
+  console.error('[postMistral] slot=' + slot + ' keys=' + keys.length + ' model=' + (body.model || MISTRAL_MODEL));
+  let lastErr = null;
+  for (const key of keys) {
+    console.error('[postMistral] trying key=' + key.substring(0,8) + '...');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(MISTRAL_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ ...body, model: body.model || MISTRAL_MODEL }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      console.error('[postMistral] response status=' + res.status);
+      if (!res.ok) {
+        const txt = await res.text().catch(() => 'no body');
+        const err = new Error(`Mistral API ${res.status}: ${txt.slice(0, 300)}`);
+        err.status = res.status;
+        // 401 = this key is dead (revoked/typo) → try the next key, not fail the request
+        if (res.status === 401 || res.status === 429 || res.status >= 500) { lastErr = err; continue; }
+        throw err;
+      }
+      return res;
+    } catch (e) {
+      clearTimeout(timeout);
+      console.error('[postMistral] catch error status=' + (e.status||'null') + ' msg=' + (e.message?.substring(0,100||'')||'') );
+      if (e.name === 'AbortError') { lastErr = e; continue; }
+      if (e.status === 401 || e.status === 429 || (e.status && e.status >= 500)) { lastErr = e; continue; }
+      throw e;
+    }
+  }
+  throw lastErr || new Error('All Mistral keys exhausted');
+}
 
 // Load the machine-readable catalog so the LLM can reason over REAL products
 // (prices, tags, descriptions) instead of hallucinating upsells.
@@ -2495,34 +2620,45 @@ async function callMistralAPI(prompt, schema) {
   // The system prompt already instructs JSON-only output, and handleResponse
   // strips markdown code fences before parsing.
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
-  try {
-    const res = await fetch(MISTRAL_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${MISTRAL_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    return await handleResponse(res);
-  } catch (e) {
-    clearTimeout(timeout);
-    throw e;
-  }
+  const res = await postMistral('invoice', body, 30000);
+  return await handleResponse(res);
 }
 
 // --- Dynamic Catalog Management ---
 app.get('/api/catalog', async (req, res) => {
   try {
-    const products = await query('SELECT * FROM products ORDER BY created_at DESC');
+    const { merchant_id } = req.query;
+    // Optional scoping: buyer picked a specific store, so only show that
+    // merchant's products. No param = global catalog (legacy behavior).
+    const products = merchant_id
+      ? await query('SELECT * FROM products WHERE user_id = $1 ORDER BY created_at DESC', [String(merchant_id)])
+      : await query('SELECT * FROM products ORDER BY created_at DESC');
     res.json(products.rows);
   } catch (err) {
     res.status(500).json({ error: 'catalog_error', message: err.message });
+  }
+});
+
+// --- Merchants (storefronts for the buyer's store picker) ---
+app.get('/api/merchants', async (req, res) => {
+  try {
+    // Only users who actually have products — an empty storefront is noise.
+    // ponytail: role is NOT filtered here — /api/auth/login flips the user's
+    // role to whichever tab they last logged in with, so product ownership
+    // (not the flippy role flag) defines a store. Upgrade path: stop flipping
+    // roles at login, then re-add the role filter.
+    // Name falls back to email local-part since users.name is often blank.
+    const r = await query(`
+      SELECT u.id, COALESCE(NULLIF(u.name, ''), split_part(u.email, '@', 1)) AS name, u.email, COUNT(p.id)::int AS product_count
+      FROM users u
+      JOIN products p ON p.user_id = u.id
+      GROUP BY u.id, u.name, u.email
+      ORDER BY product_count DESC, name
+    `);
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[MERCHANTS] list failed', err.message);
+    res.status(500).json({ error: 'internal_error', message: 'Failed to list merchants' });
   }
 });
 
@@ -2548,6 +2684,30 @@ app.post('/api/catalog', authMiddleware, async (req, res) => {
       [id, req.user.id, skuV, name, description || null, priceN, floorN, hsn_code || null]
     );
     res.json({ success: true, id, sku: skuV });
+  } catch (err) {
+    res.status(500).json({ error: 'catalog_error', message: err.message });
+  }
+});
+
+app.put('/api/catalog/:id', authMiddleware, async (req, res) => {
+  const { name, description, price, margin_floor, hsn_code } = req.body;
+  if (!name || typeof name !== 'string' || name.length > 200) {
+    return res.status(400).json({ error: 'invalid_name', message: 'Product name (max 200 chars) is required.' });
+  }
+  const priceN = Number(price), floorN = Number(margin_floor);
+  if (!Number.isFinite(priceN) || priceN < 0 || priceN > 99999999.99) {
+    return res.status(400).json({ error: 'invalid_price', message: 'price must be a finite non-negative number.' });
+  }
+  if (!Number.isFinite(floorN) || floorN < 0 || floorN > priceN) {
+    return res.status(400).json({ error: 'invalid_margin_floor', message: 'margin_floor must be between 0 and price.' });
+  }
+  try {
+    const r = await query(
+      'UPDATE products SET name = $1, description = $2, price = $3, margin_floor = $4, hsn_code = COALESCE($5, hsn_code) WHERE id = $6 AND user_id = $7',
+      [name, description || null, priceN, floorN, hsn_code || null, req.params.id, req.user.id]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'not_found', message: 'Product not found in your catalog. Adopt the shared catalog from the AI-Sellability panel first.' });
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'catalog_error', message: err.message });
   }
@@ -2650,10 +2810,7 @@ async function handleResponse(res) {
 app.post('/api/llm/invoke', authMiddleware, async (req, res) => {
   const { prompt, response_json_schema } = req.body;
 
-  // FAIL-LOUD (the silent mock fallback was removed): if Mistral is not
-  // configured we return an explicit error instead of inventing an invoice or
-  // claiming validation passed. An honest "AI is off" beats a fake "AI said OK".
-  if (!MISTRAL_API_KEY) {
+  if (!hasAnyLLMKey()) {
     console.warn('[FAIL-LOUD] MISTRAL_API_KEY not set — refusing to fake AI output.');
     return res.status(503).json({
       error: 'ai_not_configured',
@@ -2666,7 +2823,7 @@ app.post('/api/llm/invoke', authMiddleware, async (req, res) => {
     const parsed = await callMistralAPI(prompt, response_json_schema);
     return res.json(normalizeInvoiceResponse(parsed));
   } catch (err) {
-    console.error('[FAIL-LOUD] Mistral call failed — no canned fallback:', err.message);
+    console.error('[FAIL-LOUD] LLM call failed — no canned fallback:', err.message);
     return res.status(502).json({
       error: 'ai_unavailable',
       message: 'The AI service was unavailable. No canned/mocked result was substituted.',
@@ -2688,7 +2845,7 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
       bundles: AGENT_CATALOG.bundles,
     });
   }
-  const { messages } = req.body;
+  const { messages, merchant_id } = req.body;
 
   const tools = [
     {
@@ -2710,8 +2867,8 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
             original_item: { type: "string" },
             user_budget_cap: { type: "number", description: "The total budget or mandate limit the user stated, e.g. 25000" },
             total_cost_of_original_items: { type: "number", description: "The total cost of the original items plus any previously accepted upsells" },
-            remaining_headroom: { type: "number", description: "user_budget_cap minus total_cost_of_original_items" },
-            recommended_item: { type: "string", description: "The exact product name from the catalog. Its price MUST be strictly less than or equal to remaining_headroom." },
+            remaining_headroom: { type: "number", description: "user_budget_cap minus total_cost_of_original_items. IMPORTANT: prices are BEFORE GST; an 18% GST is added on the invoice. Keep the recommended item's price such that (sum of all original+upsell prices) * 1.18 stays within the cap." },
+            recommended_item: { type: "string", description: "The exact product name from the catalog. Its price (plus GST) must keep the invoice grand total within remaining_headroom." },
             reason: { type: "string", description: "One or two sentences explaining WHY this complement adds value (technical fit, compliance, cost of NOT having it, etc.)." }
           },
           required: ["original_item", "user_budget_cap", "total_cost_of_original_items", "remaining_headroom", "recommended_item", "reason"]
@@ -2789,8 +2946,7 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
     }
   ];
 
-  // FAIL-LOUD (v2): the old keyword-based "demo mode" fallback was removed.
-  if (!MISTRAL_API_KEY) {
+  if (!hasAnyLLMKey()) {
     console.warn('[FAIL-LOUD] /api/agent/chat refused: MISTRAL_API_KEY not set — no canned tool calls.');
     return res.status(503).json({
       error: 'agent_ai_not_configured',
@@ -2803,7 +2959,15 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
   }
 
   try {
-    const productsRes = await query('SELECT sku, name, description, price, margin_floor FROM products');
+    // Buyer-scoped shopping: when the buyer picked a store, the agent sees only
+    // that merchant's catalog — no cross-store mixing in recommendations.
+    let catalogClause = '';
+    const catalogParams = [];
+    if (merchant_id) {
+      catalogClause = ' WHERE user_id = $1';
+      catalogParams.push(String(merchant_id));
+    }
+    const productsRes = await query(`SELECT sku, name, description, price, margin_floor FROM products${catalogClause}`, catalogParams);
     const dynamicCatalog = productsRes.rows;
     const catalogContext = dynamicCatalog.length > 0
       ? `\n\nMERCHANT CATALOG (real products, real prices — only recommend items from this list):\n${JSON.stringify(dynamicCatalog, null, 2)}`
@@ -2821,7 +2985,9 @@ app.post('/api/agent/chat', authMiddleware, async (req, res) => {
       mandateContext = `\n\nUSER'S ACTIVE CFO MANDATE:\nThe backend reports that this user has an active autonomous budget delegation:
 - Per-Transaction Limit: ₹${delegationMax}
 - Daily Limit: ₹${dailyLimit} (₹${dailySpent} already spent today)
-This means you must treat ₹${Math.min(delegationMax, dailyLimit - dailySpent)} as their ABSOLUTE MAXIMUM budget for this conversation, even if they don't explicitly mention it. DO NOT recommend upsells that cause the total cart to exceed this calculated budget cap.`;
+This means you must treat ₹${Math.min(delegationMax, dailyLimit - dailySpent)} as their ABSOLUTE MAXIMUM budget for this conversation, even if they don't explicitly mention it. DO NOT recommend upsells that cause the total cart to exceed this calculated budget cap.
+
+GST-IS-INCLUSIVE RULE: The cap ABOVE is the final RUPEE amount the buyer actually pays, and every invoice carries 18% GST on top of the item prices. The catalog prices and your quoted subtotals are BEFORE GST. So the invoice GRAND TOTAL (subtotal + 18% GST) must be <= the cap. Concretely: keep the SUBTOTAL at or below (cap / 1.18). Example — cap ₹${Math.min(delegationMax, dailyLimit - dailySpent)} allows an item+upsell SUBTOTAL of at most ₹${Math.floor(Math.min(delegationMax, dailyLimit - dailySpent) / 1.18)} before GST (₹${Math.floor(Math.min(delegationMax, dailyLimit - dailySpent) / 1.18 * 0.18)} GST), so the quoted grand total stays under the cap. Always quote and compare against GRAND TOTALS, never raw item prices, when checking the mandate cap. Do not claim a cart is "under budget" unless its GST-inclusive grand total fits.`; 
     }
 
     const body = {
@@ -2864,19 +3030,8 @@ POST-SALE: After generating the invoice, summarise the deal: what was purchased,
       temperature: 0.2
     };
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25000);
-
-    const response = await fetch(MISTRAL_URL, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${MISTRAL_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    
+    const response = await postMistral('chat', body, 25000);
     if (!response.ok) throw new Error(`Mistral API Error: ${await response.text()}`);
-    
     const data = await response.json();
     const message = data.choices?.[0]?.message;
     if (!message) throw new Error('Empty message response from LLM');
@@ -2912,7 +3067,7 @@ app.get('/api/apps/public/prod/public-settings/by-id/:appId', async (req, res) =
   res.json({ id: req.params.appId, public_settings: {} });
 });
 
-// --- Gap agents #1 (sellability) + #5 (liability): additive only ---
+// --- Gap agents #1 (sellability): additive only ---
 registerGapAgents(app, { query, appendAuditLog, authMiddleware });
 
 // --- Error handler ---
