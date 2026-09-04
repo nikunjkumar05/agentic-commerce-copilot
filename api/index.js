@@ -2757,7 +2757,7 @@ app.post('/api/chat/sync', authMiddleware, async (req, res) => {
   // Authenticated + strictly scoped: a session belongs to exactly one user.
   // Previously any unauthenticated caller could overwrite any session_id and
   // the orphan rows were attributed to merchant #1.
-  const { session_id, messages, buyer_name } = req.body;
+  const { session_id, messages, buyer_name, merchant_id } = req.body;
   if (!session_id || typeof session_id !== 'string' || session_id.length > 128) {
     return res.status(400).json({ error: 'bad_request', message: 'valid session_id is required' });
   }
@@ -2765,11 +2765,14 @@ app.post('/api/chat/sync', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'bad_request', message: 'messages must be an array (max 500 turns)' });
   }
   try {
-    const existing = await query('SELECT id FROM chat_sessions WHERE id = $1 AND user_id = $2', [session_id, req.user.id]);
+    // The chat session belongs to the merchant whose store the buyer is visiting.
+    // If not provided, fallback to the logged-in user (e.g. merchant testing their own bot).
+    const targetUserId = merchant_id || req.user.id;
+    const existing = await query('SELECT id FROM chat_sessions WHERE id = $1', [session_id]);
     if (existing.rows.length > 0) {
-      await query('UPDATE chat_sessions SET messages = $1, buyer_name = $2, updated_at = NOW() WHERE id = $3 AND user_id = $4', [JSON.stringify(messages), buyer_name || null, session_id, req.user.id]);
+      await query('UPDATE chat_sessions SET messages = $1, buyer_name = $2, updated_at = NOW() WHERE id = $3 AND user_id = $4', [JSON.stringify(messages), buyer_name || null, session_id, targetUserId]);
     } else {
-      await query('INSERT INTO chat_sessions (id, user_id, buyer_name, messages) VALUES ($1, $2, $3, $4)', [session_id, req.user.id, buyer_name || null, JSON.stringify(messages)]);
+      await query('INSERT INTO chat_sessions (id, user_id, buyer_name, messages) VALUES ($1, $2, $3, $4)', [session_id, targetUserId, buyer_name || null, JSON.stringify(messages)]);
     }
     res.json({ success: true });
   } catch (err) {

@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import ReactMarkdown from 'react-markdown';
-import { Send, Package, FileText, CheckCircle, Shield, Loader2, Wrench } from 'lucide-react';
+import { Send, Package, FileText, CheckCircle, Shield, Loader2, Wrench, Store } from 'lucide-react';
 import { toast } from 'sonner';
 import { db } from '@/services/db';
 import { generateInvoicePDF } from '@/lib/pdfGenerator';
@@ -27,6 +27,12 @@ export default function AgentChat() {
 
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  // True while the Razorpay modal is closing and /api/agent/verify is in
+  // flight (or has just completed) — shows "Confirming payment…" so the
+  // checkout doesn't feel like it aborts the moment the modal disappears.
+  const [confirmingPayment, setConfirmingPayment] = useState(false);
+  // Invoice id that is currently being prepared (order created / modal opening).
+  const [preparingInvoice, setPreparingInvoice] = useState(null);
 const [fallbackMode, setFallbackMode] = useState(false);
   const [fallbackCatalog, setFallbackCatalog] = useState([]);
   const [fallbackSimulated, setFallbackSimulated] = useState(false);
@@ -66,6 +72,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
       try { profile = JSON.parse(localStorage.getItem('institution_profile') || '{}'); } catch {}
       try { buyerProfile = JSON.parse(localStorage.getItem('buyer_profile') || '{}'); } catch {}
       const newInvoice = await db.entities.Invoice.create({
+        merchant_id: localStorage.getItem('agent_selected_merchant') || undefined,
         invoice_number: 'INV-' + Math.floor(Math.random() * 100000),
         institution_name: profile.name || 'AgentPay Gateway',
         institution_address: profile.address || 'New Delhi, India',
@@ -96,6 +103,21 @@ const [fallbackMode, setFallbackMode] = useState(false);
 
   const [lastInvoiceId, setLastInvoiceId] = useState(() => localStorage.getItem('agent_last_invoice_id') || null); 
   const chatEndRef = useRef(null);
+
+  // The buyer's chosen store scopes every catalog lookup — search, upsell and
+  // invoice pricing all stay within one merchant's products.
+  const catalogUrl = () => {
+    const mid = localStorage.getItem('agent_selected_merchant');
+    return mid ? `/api/catalog?merchant_id=${encodeURIComponent(mid)}` : '/api/catalog';
+  };
+  // Name shown in the header chip; re-read on focus so returning from the
+  // store picker updates it without a remount.
+  const [selectedMerchant, setSelectedMerchant] = useState(() => localStorage.getItem('agent_selected_merchant_name') || null);
+  useEffect(() => {
+    const sync = () => setSelectedMerchant(localStorage.getItem('agent_selected_merchant_name') || null);
+    window.addEventListener('focus', sync);
+    return () => window.removeEventListener('focus', sync);
+  }, []);
 
   // Release a simulated LLM outage from inside the chat (merchant/jailed-buyer
   // recovery without navigating to the Audit Trail). Real outages (no API key)
@@ -208,13 +230,15 @@ const [fallbackMode, setFallbackMode] = useState(false);
       if (p?.name) buyerName = p.name;
     } catch {}
 
+    const merchantId = localStorage.getItem('agent_selected_merchant');
+
     fetch('/api/chat/sync', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(localStorage.getItem('app_access_token') && { Authorization: `Bearer ${localStorage.getItem('app_access_token')}` })
       },
-      body: JSON.stringify({ session_id: sessionId, messages, buyer_name: buyerName })
+      body: JSON.stringify({ session_id: sessionId, messages, buyer_name: buyerName, merchant_id: merchantId })
     }).catch(e => console.error('Failed to sync chat:', e));
     
   }, [messages]);
@@ -225,7 +249,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+  }, [messages, isTyping, confirmingPayment, preparingInvoice]);
 
   // 3. When user returns from payment page, check if invoice was settled
   useEffect(() => {
@@ -315,6 +339,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
           ...(token && { Authorization: `Bearer ${token}` })
         },
         body: JSON.stringify({ 
+          merchant_id: localStorage.getItem('agent_selected_merchant') || undefined,
           messages: newMessages.map(m => {
             const cleanMsg = { role: m.role, content: m.content || "" };
             if (m.name) cleanMsg.name = m.name;
@@ -370,7 +395,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
 
           if (call.function.name === 'search_catalog') {
             try {
-              const catRes = await fetch('/api/catalog');
+              const catRes = await fetch(catalogUrl());
               const catalog = await catRes.json();
               const queryStr = (args.query || '').toLowerCase();
               
@@ -398,7 +423,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
             }
           } else if (call.function.name === 'suggest_upsell_bundle') {
             try {
-              const catRes = await fetch('/api/catalog');
+              const catRes = await fetch(catalogUrl());
               const catalog = await catRes.json();
 
               // The LLM now does the actual reasoning (the catalog is injected in
@@ -495,7 +520,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
             
             let catalogList = [];
             try {
-              const cr = await fetch('/api/catalog');
+              const cr = await fetch(catalogUrl());
               catalogList = await cr.json();
             } catch {}
 
@@ -527,6 +552,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
 
             try {
               const newInvoice = await db.entities.Invoice.create({
+                merchant_id: localStorage.getItem('agent_selected_merchant') || undefined,
                 invoice_number: 'INV-' + Math.floor(Math.random() * 100000),
                 institution_name: profile.name || 'AgentPay Gateway',
                 institution_address: profile.address || 'New Delhi, India',
@@ -578,7 +604,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
               
               let catalogList = [];
               try {
-                const cr = await fetch('/api/catalog');
+                const cr = await fetch(catalogUrl());
                 catalogList = await cr.json();
               } catch {}
 
@@ -738,7 +764,12 @@ const [fallbackMode, setFallbackMode] = useState(false);
           <h2 className="text-lg font-bold font-heading leading-tight">AgentPay Checkout</h2>
           <p className="text-xs text-muted-foreground">Automated B2B Gateway</p>
         </div>
-        <Button variant="ghost" size="sm" className="ml-auto text-xs" onClick={() => {
+        {selectedMerchant && (
+          <Link to="/buyer/stores" className="ml-auto flex items-center gap-1.5 text-xs font-medium text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-full px-3 py-1.5 hover:bg-indigo-100 transition-colors">
+            <Store className="w-3.5 h-3.5" /> <span className="max-w-[140px] truncate">{selectedMerchant}</span>
+          </Link>
+        )}
+        <Button variant="ghost" size="sm" className={selectedMerchant ? 'text-xs' : 'ml-auto text-xs'} onClick={() => {
           localStorage.removeItem('agent_chat_history');
           localStorage.removeItem('agent_last_invoice_id');
           localStorage.removeItem('agent_chat_session_id');
@@ -829,6 +860,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                     <div className="flex flex-col gap-2 pt-2 border-t">
                       <Button 
                         onClick={async () => {
+                          setPreparingInvoice(msg.uiData.id);
                           const token = localStorage.getItem('app_access_token');
                           try {
                             const res = await fetch('/api/checkout/order', {
@@ -847,6 +879,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                               description: `Checkout for ${msg.uiData.invoice_number}`,
                               order_id: orderData.order_id,
                               handler: async function (response) {
+                                setConfirmingPayment(true);
                                 try {
                                   await fetch('/api/agent/verify', {
                                     method: 'POST',
@@ -866,6 +899,8 @@ const [fallbackMode, setFallbackMode] = useState(false);
                                   }]);
                                 } catch (e) {
                                   toast.error('Payment verification failed.');
+                                } finally {
+                                  setConfirmingPayment(false);
                                 }
                               },
                               prefill: { name: 'AI Buyer Agent', email: 'agent@commerce.copilot' },
@@ -874,14 +909,23 @@ const [fallbackMode, setFallbackMode] = useState(false);
                             
                             const rzp = new window.Razorpay(options);
                             rzp.on('payment.failed', function (response){ toast.error('Payment failed'); });
+                            setPreparingInvoice(null);
                             rzp.open();
                           } catch (err) {
+                            setPreparingInvoice(null);
                             toast.error(err.message || 'Failed to initialize checkout');
                           }
                         }}
                         className="w-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-md font-bold h-10"
+                        disabled={preparingInvoice === msg.uiData.id || confirmingPayment}
                       >
-                        Approve & Pay Now
+                        {preparingInvoice === msg.uiData.id ? (
+                          <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Preparing checkout…</>
+                        ) : confirmingPayment ? (
+                          <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Confirming payment…</>
+                        ) : (
+                          'Approve & Pay Now'
+                        )}
                       </Button>
                       <div className="flex gap-2">
                         <Button variant="outline" size="sm" className="flex-1" onClick={() => navigate(`/invoice/${msg.uiData.id}`)}>
@@ -1036,6 +1080,14 @@ const [fallbackMode, setFallbackMode] = useState(false);
               <span className="w-2 h-2 rounded-full bg-primary/40 animate-bounce"></span>
               <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '150ms' }}></span>
               <span className="w-2 h-2 rounded-full bg-primary/80 animate-bounce" style={{ animationDelay: '300ms' }}></span>
+            </div>
+          </div>
+        )}
+        {confirmingPayment && (
+          <div className="flex items-start gap-4">
+            <div className="px-4 py-3 bg-card border rounded-2xl rounded-tl-sm flex gap-2 items-center h-[44px]">
+              <Loader2 className="w-4 h-4 animate-spin text-primary" />
+              <span className="text-xs text-muted-foreground font-medium">Confirming payment with Razorpay…</span>
             </div>
           </div>
         )}
