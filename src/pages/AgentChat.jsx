@@ -625,6 +625,11 @@ const [fallbackMode, setFallbackMode] = useState(false);
           localStorage.removeItem('agent_last_invoice_id');
           localStorage.removeItem('agent_chat_session_id');
           setLastInvoiceId(null);
+          setFallbackMode(false);
+          setFallbackCart([]);
+          setFallbackCatalog([]);
+          setFallbackSimulated(false);
+          setFallbackQuery('');
           setMessages([{ role: 'assistant', content: 'Chat history cleared. How can I help you?' }]);
         }}>Clear</Button>
       </div>
@@ -935,11 +940,16 @@ const [fallbackMode, setFallbackMode] = useState(false);
               <div className="flex items-center gap-2">
                 <Package className="w-5 h-5 text-primary" />
                 <h3 className="font-bold text-sm">Manual Checkout — Agent LLM offline</h3>
-                {fallbackSimulated && (
-                  <Button size="sm" variant="default" className="h-7 text-xs ml-auto" onClick={restoreAutonomousMode}>
-                    Restore autonomous mode
+                <div className="ml-auto flex items-center gap-2">
+                  <Button size="sm" variant="ghost" className="h-7 text-xs text-muted-foreground hover:text-foreground" onClick={() => setFallbackMode(false)}>
+                    Dismiss
                   </Button>
-                )}
+                  {fallbackSimulated && (
+                    <Button size="sm" variant="default" className="h-7 text-xs" onClick={restoreAutonomousMode}>
+                      Restore autonomous mode
+                    </Button>
+                  )}
+                </div>
               </div>
               <Input value={fallbackQuery} onChange={e => setFallbackQuery(e.target.value)} placeholder="Search catalog (e.g., firewall, compliance)..." className="h-10 bg-background" />
               <div className="flex gap-2 overflow-x-auto pb-2">
