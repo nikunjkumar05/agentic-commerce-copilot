@@ -77,14 +77,13 @@ const [fallbackMode, setFallbackMode] = useState(false);
         status: 'draft',
         invoice_date: new Date().toISOString(),
         due_date: new Date(Date.now() + 30 * 86400000).toISOString(),
-        compliance_score: null,
         is_ai_upsell: false
       });
       setLastInvoiceId(newInvoice.id);
       setFallbackCart([]);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `Invoice ${newInvoice.invoice_number} created for ₹${grand_total.toLocaleString('en-IN')}. Note: this invoice needs human validation before I can settle it autonomously.`,
+        content: `Invoice ${newInvoice.invoice_number} created for ₹${grand_total.toLocaleString('en-IN')}.`,
         uiType: 'invoice',
         uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number }
       }]);
@@ -422,7 +421,6 @@ const [fallbackMode, setFallbackMode] = useState(false);
                 status: 'draft',
                 invoice_date: today,
                 due_date: due,
-                compliance_score: null,
                 is_ai_upsell: args.is_ai_upsell || false
               });
 
@@ -432,7 +430,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                 role: 'tool',
                 tool_call_id: call.id,
                 name: 'create_invoice',
-                content: `I have generated invoice ${newInvoice.invoice_number} for ${itemNames} at ₹${subtotal}. ${args.is_ai_upsell ? 'Great choice on the bundle!' : ''} 🎯 Note: as an agent I cannot grade my own work - this invoice needs human validation before I am allowed to settle it autonomously.`,
+                content: `I have generated invoice ${newInvoice.invoice_number} for ${itemNames} at ₹${subtotal}. ${args.is_ai_upsell ? 'Great choice on the bundle! 🎯' : ''}`,
                 uiType: 'invoice',
                 uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number }
               }]);

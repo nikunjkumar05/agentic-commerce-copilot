@@ -18,7 +18,6 @@ import AppLayout from '@/components/layout/AppLayout';
 import Dashboard from '@/pages/Dashboard';
 import NewInvoice from '@/pages/NewInvoice';
 import InvoiceDetail from '@/pages/InvoiceDetail';
-import PaymentPage from '@/pages/PaymentPage';
 import StoragePage from '@/pages/StoragePage';
 import SettingsPage from '@/pages/SettingsPage';
 import AgentChat from '@/pages/AgentChat';
@@ -74,7 +73,6 @@ const AuthenticatedApp = () => {
           <Route path="/merchant/audit" element={<AuditTrailPage />} />
           <Route path="/merchant/invoice/new" element={<NewInvoice />} />
           <Route path="/invoice/:id" element={<InvoiceDetail />} />
-          <Route path="/invoice/:id/pay" element={<PaymentPage />} />
           <Route path="/merchant/storage" element={<StoragePage />} />
           <Route path="/merchant/settings" element={<SettingsPage />} />
           <Route path="/audit" element={<Navigate to="/merchant/audit" replace />} />

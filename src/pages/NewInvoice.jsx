@@ -7,13 +7,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { MessageSquare, FormInput, Save, ShieldCheck, ArrowLeft } from 'lucide-react';
+import { MessageSquare, FormInput, Save, ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { generateInvoiceNumber } from '@/lib/invoiceHelpers';
 import ChatInput from '@/components/invoice/ChatInput';
 import AiThinking from '@/components/invoice/AiThinking';
 import InvoiceForm from '@/components/invoice/InvoiceForm';
-import ValidationPanel from '@/components/invoice/ValidationPanel';
 
 const emptyInvoice = {
   invoice_number: '',
@@ -49,9 +48,6 @@ export default function NewInvoice() {
     gst_number: savedProfile.gst || '',
   });
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isValidating, setIsValidating] = useState(false);
-  const [complianceScore, setComplianceScore] = useState(null);
-  const [isDemoMode, setIsDemoMode] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const chatEndRef = useRef(null);
 
@@ -190,61 +186,6 @@ Rules:
     }
   };
 
-  const handleValidate = async () => {
-    setIsValidating(true);
-    try {
-      const result = await db.integrations.Core.InvokeLLM({
-        prompt: `You are a B2B commerce compliance auditor for India. Validate this invoice:
-${JSON.stringify(invoice, null, 2)}
-
-Check for:
-1. Incorrect GST calculations (Subtotal + (Subtotal * TaxRate/100) = Grand Total)
-2. Invalid GST numbers (must follow Indian 15-char format)
-3. Missing mandatory fields for enterprise procurement
-4. Unusually high/low amounts vs line item descriptions
-5. Date validity
-Return JSON with { score: 0-100, suggestions: [{ field, issue, suggestion, severity }] }
-
-Return your analysis.`,
-        response_json_schema: {
-          type: "object",
-          properties: {
-            passed: { type: "boolean" },
-            score: { type: "number" },
-            issues: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  field: { type: "string" },
-                  severity: { type: "string" },
-                  issue: { type: "string" },
-                  suggestion: { type: "string" }
-                }
-              }
-            }
-          }
-        }
-      });
-
-      setComplianceScore(result.score);
-      setIsDemoMode(!!result.demo_mode);
-      setInvoice(prev => ({
-        ...prev,
-        ai_suggestions: result.issues || [],
-        compliance_score: result.score,
-        status: (result.score ?? (result.passed ? 90 : 0)) >= 85 ? 'validated' : 'anomaly',
-      }));
-    } catch (err) {
-      // FAIL LOUD: never silently "pass" an invoice when the validator is down.
-      console.error('Invoice validation failed:', err);
-      const reason = err?.response?.data?.message || err?.message || 'Unknown error';
-      toast.error(`Validation unavailable: ${reason}`, { duration: 6000 });
-    } finally {
-      setIsValidating(false);
-    }
-  };
-
   const handleSave = () => {
     saveMutation.mutate(invoice);
   };
@@ -262,10 +203,6 @@ Return your analysis.`,
           <h2 className="text-sm font-heading font-bold">New Invoice</h2>
           <p className="text-[10px] text-muted-foreground font-mono">{invoice.invoice_number}</p>
         </div>
-        <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5 border-muted-foreground/20" onClick={handleValidate} disabled={isValidating || !invoice.recipient_name}>
-          <ShieldCheck className="w-3.5 h-3.5" />
-          Validate
-        </Button>
         <Button size="sm" className="h-8 text-xs gap-1.5 bg-accent hover:bg-accent/90 text-accent-foreground border-0" onClick={handleSave} disabled={saveMutation.isPending || !invoice.recipient_name}>
           <Save className="w-3.5 h-3.5" />
           Save
@@ -285,9 +222,6 @@ Return your analysis.`,
             </TabsTrigger>
             <TabsTrigger value="form" className="text-xs flex-1 gap-1 data-[state=active]:bg-card data-[state=active]:shadow-sm">
               <FormInput className="w-3 h-3" /> Form
-            </TabsTrigger>
-            <TabsTrigger value="validate" className="text-xs flex-1 gap-1 data-[state=active]:bg-card data-[state=active]:shadow-sm">
-              <ShieldCheck className="w-3 h-3" /> Review
             </TabsTrigger>
           </TabsList>
         </div>
@@ -329,22 +263,6 @@ Return your analysis.`,
 
         <TabsContent value="form" className="flex-1 overflow-y-auto mt-0">
           <InvoiceForm invoice={invoice} onChange={setInvoice} />
-        </TabsContent>
-
-        <TabsContent value="validate" className="flex-1 overflow-y-auto mt-0">
-          <ValidationPanel
-            score={complianceScore}
-            suggestions={invoice.ai_suggestions}
-            demoMode={isDemoMode}
-            isValidating={isValidating}
-          />
-          {complianceScore === null && !isValidating && (
-            <div className="p-6 text-center space-y-3">
-              <ShieldCheck className="w-12 h-12 mx-auto text-muted-foreground/30" />
-              <p className="text-sm font-medium text-muted-foreground">No validation run yet</p>
-              <p className="text-xs text-muted-foreground/60">Fill in your invoice and tap "Validate" to run compliance checks</p>
-            </div>
-          )}
         </TabsContent>
       </Tabs>
     </div>

@@ -2371,14 +2371,11 @@ function normalizeInvoiceResponse(data) {
   // Force the current date to prevent LLM hallucinating past dates (e.g. 2023)
   out.invoice_date = new Date().toISOString().split('T')[0];
   out.due_date = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
-  // BUGFIX: Deterministic Compliance (Don't trust the LLM!)
   // Validate GSTIN format deterministically server-side
   const gstRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
-  let computedScore = data.compliance_score ?? data.score ?? 95;
   out.ai_suggestions = data.ai_suggestions || data.suggestions || data.issues || [];
 
   if (out.recipient_gst && !gstRegex.test(out.recipient_gst)) {
-    computedScore = Math.min(computedScore, 65);
     out.ai_suggestions.push({
       field: "recipient_gst",
       issue: "CRITICAL: Invalid GSTIN Format detected by deterministic scan",
@@ -2387,7 +2384,6 @@ function normalizeInvoiceResponse(data) {
     });
   }
 
-  out.compliance_score = computedScore;
   return out;
 }
 

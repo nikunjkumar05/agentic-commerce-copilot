@@ -8,11 +8,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { ArrowLeft, Printer, FileDown, Database, CreditCard, Pencil, ShieldCheck, Loader2, Trash2 } from 'lucide-react';
+import { ArrowLeft, Printer, FileDown, Database, Pencil, Loader2, Trash2 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import InvoicePreview from '@/components/invoice/InvoicePreview';
 import InvoiceForm from '@/components/invoice/InvoiceForm';
-import ValidationPanel from '@/components/invoice/ValidationPanel';
 import { useRef } from 'react';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
@@ -27,8 +26,6 @@ export default function InvoiceDetail() {
   const [isEditing, setIsEditing] = useState(false);
   const [editedInvoice, setEditedInvoice] = useState(null);
   const [isStoring, setIsStoring] = useState(false);
-  const [isValidating, setIsValidating] = useState(false);
-  const [isDemoMode, setIsDemoMode] = useState(false);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
   const previewRef = useRef(null);
 
@@ -91,40 +88,6 @@ export default function InvoiceDetail() {
       toast.error('Failed to store on IPFS');
     }
     setIsStoring(false);
-  };
-
-  const handleValidate = async () => {
-    setIsValidating(true);
-    try {
-      const result = await db.integrations.Core.InvokeLLM({
-        prompt: `Validate this B2B commerce invoice for compliance: ${JSON.stringify(invoice)}. Check GST, calculations, missing fields, anomalies. Return score 0-100 and issues.`,
-        response_json_schema: {
-          type: "object",
-          properties: {
-            passed: { type: "boolean" },
-            score: { type: "number" },
-            issues: { type: "array", items: { type: "object", properties: { field: { type: "string" }, severity: { type: "string" }, issue: { type: "string" }, suggestion: { type: "string" } } } }
-          }
-        }
-      });
-      setIsDemoMode(!!result.demo_mode);
-      await db.entities.Invoice.update(id, {
-        compliance_score: result.score,
-        ai_suggestions: result.issues || [],
-        status: (result.score ?? (result.passed ? 90 : 0)) >= 85 ? 'validated' : 'anomaly',
-      });
-      queryClient.invalidateQueries({ queryKey: ['invoice', id] });
-    } catch (err) {
-      // FAIL LOUD: never mark the invoice validated when the validator is down.
-      // The backend now returns a real 503/502 (no canned "passed") when AI is
-      // unconfigured/unavailable, so surface the exact reason instead of letting
-      // the button spin forever or silently passing.
-      console.error('Validation failed:', err);
-      const reason = err?.response?.data?.message || err?.message || 'unknown error';
-      toast.error(`Validation unavailable: ${reason}`, { duration: 6000 });
-    } finally {
-      setIsValidating(false);
-    }
   };
 
   const handlePrint = () => window.print();
@@ -204,18 +167,10 @@ export default function InvoiceDetail() {
         <Button variant="outline" size="sm" className="h-8 text-xs gap-1 shrink-0 border-muted-foreground/20" onClick={handleExportPDF} disabled={isExportingPDF}>
           {isExportingPDF ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileDown className="w-3 h-3" />} PDF
         </Button>
-        <Button variant="outline" size="sm" className="h-8 text-xs gap-1 shrink-0 border-muted-foreground/20" onClick={handleValidate} disabled={isValidating}>
-          {isValidating ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />} Validate
-        </Button>
         <Button variant="outline" size="sm" className="h-8 text-xs gap-1 shrink-0 border-muted-foreground/20" onClick={handleStoreOnIPFS} disabled={isStoring || !!invoice.cid}>
           {isStoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <Database className="w-3 h-3" />}
           {invoice.cid ? 'On IPFS' : 'Store IPFS'}
         </Button>
-        <Link to={`/invoice/${id}/pay`}>
-          <Button size="sm" className="h-8 text-xs gap-1 shrink-0 bg-accent hover:bg-accent/90 text-accent-foreground border-0">
-            <CreditCard className="w-3 h-3" /> Pay
-          </Button>
-        </Link>
       </div>
 
       {/* Content */}
@@ -224,7 +179,6 @@ export default function InvoiceDetail() {
           <TabsList className="w-full h-9 bg-muted/60 rounded-xl p-0.5 mb-3">
             <TabsTrigger value="preview" className="text-xs flex-1 data-[state=active]:bg-card data-[state=active]:shadow-sm">Preview</TabsTrigger>
             <TabsTrigger value="edit" className="text-xs flex-1 data-[state=active]:bg-card data-[state=active]:shadow-sm">Edit</TabsTrigger>
-            <TabsTrigger value="review" className="text-xs flex-1 data-[state=active]:bg-card data-[state=active]:shadow-sm">Compliance</TabsTrigger>
           </TabsList>
 
           <TabsContent value="preview" className="mt-0">
@@ -243,15 +197,6 @@ export default function InvoiceDetail() {
                 </Button>
               </div>
             )}
-          </TabsContent>
-
-          <TabsContent value="review" className="mt-0">
-            <ValidationPanel
-              score={invoice.compliance_score}
-              suggestions={invoice.ai_suggestions}
-              demoMode={isDemoMode}
-              isValidating={isValidating}
-            />
           </TabsContent>
         </Tabs>
       </div>

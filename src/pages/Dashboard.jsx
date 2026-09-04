@@ -96,34 +96,6 @@ export default function Dashboard() {
         </Link>
       </motion.div>
 
-      {/* Action Center / Escalation Queue */}
-      {invoices.filter(i => i.status === 'draft').length > 0 && (
-        <motion.div variants={fadeUp} className="bg-red-50 border border-red-200 p-5 rounded-3xl shadow-sm">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="text-red-800 font-bold flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-              Action Center: Escalated for Human Review
-            </h3>
-            <span className="text-xs font-mono text-red-600 font-bold bg-red-100 px-2 py-1 rounded">
-              {invoices.filter(i => i.status === 'draft').length} Flags
-            </span>
-          </div>
-          <div className="space-y-2">
-            {invoices.filter(i => i.status === 'draft').slice(0, 3).map(inv => (
-              <div key={inv.id} className="bg-white p-3 rounded-xl border border-red-100 flex justify-between items-center text-sm">
-                <div>
-                  <Link to={`/invoice/${inv.id}`} className="font-bold hover:underline">{inv.invoice_number}</Link>
-                  <p className="text-xs text-red-600 line-clamp-1">{inv.ai_suggestions?.[0]?.suggestion || 'Mandate bounds exceeded during agent negotiation.'}</p>
-                </div>
-                <Link to={`/invoice/${inv.id}`} className="text-xs font-medium text-red-600 hover:text-red-800 whitespace-nowrap ml-4">
-                  Review Deal &rarr;
-                </Link>
-              </div>
-            ))}
-          </div>
-        </motion.div>
-      )}
-
       {/* Metrics Grid */}
       <motion.div variants={fadeUp} className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <MetricCard icon={FileText} label="Total Invoices" value={invoices.length} variant="default" />
