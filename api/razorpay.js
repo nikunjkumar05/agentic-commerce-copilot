@@ -203,11 +203,28 @@ export async function captureAutonomousPayment(orderId, amount, token = null, cu
       finalPayment = await getInstance().payments.capture(payment.id, totalPaise, 'INR');
     }
 
-    // Trust-but-verify: re-fetch from Razorpay and require a captured status
+    // Trust-but-verify: re-fetch from Razorpay and require captured + amount + order binding
+    // Mirrors the human /verify path (payment.amount + order_id checks) — the
+    // autonomous path must not be weaker. Docs: Orders amount is in paise, every
+    // payment carries its order_id and amount in the same unit.
     const verified = await getInstance().payments.fetch(finalPayment.id);
     if (verified.status !== 'captured') {
       const err = new Error(
         `Agent settlement verification failed: payment ${verified.id} status='${verified.status}'`
+      );
+      err.payment = verified;
+      throw err;
+    }
+    if (Number(verified.amount) !== totalPaise) {
+      const err = new Error(
+        `Agent settlement amount mismatch: expected ${totalPaise} paise for order ${orderId}, got ${verified.amount} paise (payment ${verified.id})`
+      );
+      err.payment = verified;
+      throw err;
+    }
+    if (verified.order_id !== orderId) {
+      const err = new Error(
+        `Agent settlement order binding failed: payment ${verified.id} is for order ${verified.order_id}, expected ${orderId}`
       );
       err.payment = verified;
       throw err;

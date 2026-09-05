@@ -39,9 +39,8 @@ This document exists so judges never have to guess what is real, what is scoped,
   (`EVAL_API_BASE` + `EVAL_JWT`). Invalid probes 400 before any Razorpay order.
 - `node scripts/backfill_audit_hashes.mjs [--apply]` — migrates legacy V1 ledger
   hashes to V2; refuses to rewrite genuinely broken (tampered) chains.
-- `node scripts/demo_funnel.mjs [--report]` — isolated DEMO merchant funnel
-  (10 suggested → 3 accepted; paid moves only via real test-mode settlement).
-- `node scripts/agent_buyer_simulation.mjs` — foreign-agent 402 buy with no account.
+- Growth funnel is demonstrated live in the UI: Dashboard AI Lift card
+  (`suggested → accepted → paid`); paid moves only via real test-mode settlement.
 
 ## Known follow-ups (not fixed for the demo)
 - Money columns migrated `REAL → NUMERIC(12,2)`; historical float rounding may leave

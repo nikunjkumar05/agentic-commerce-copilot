@@ -16,6 +16,7 @@ const merchantNavItems = [
 
 const buyerNavItems = [
   { path: '/buyer', icon: MessageSquare, label: 'Agent Chat' },
+  { path: '/buyer/stores', icon: Store, label: 'Stores' },
   { path: '/buyer/orders', icon: Package, label: 'Orders' },
   { path: '/buyer/settings', icon: SlidersHorizontal, label: 'Settings' },
 ];

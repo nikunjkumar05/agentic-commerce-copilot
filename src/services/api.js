@@ -1,9 +1,5 @@
 const TOKEN_KEY = 'app_access_token';
 
-function getBaseUrl() {
-  return import.meta.env.VITE_API_URL || '';
-}
-
 function getToken() {
   if (typeof localStorage === 'undefined') return null;
   return localStorage.getItem(TOKEN_KEY);
@@ -20,8 +16,18 @@ function storeToken(token) {
   localStorage.setItem(TOKEN_KEY, token);
 }
 
-async function request(method, path, body) {
-  const url = `${getBaseUrl()}/api${path}`;
+export const api = {
+  get: (path) => request('GET', path),
+  post: (path, body) => request('POST', path, body),
+  put: (path, body) => request('PUT', path, body),
+  delete: (path) => request('DELETE', path),
+  storeToken,
+  clearToken,
+  getToken,
+};
+
+function request(method, path, body) {
+  const url = `/api${path}`;
   const headers = { 'Content-Type': 'application/json' };
   const token = getToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -48,13 +54,3 @@ async function request(method, path, body) {
 
   return res.json();
 }
-
-export const api = {
-  get: (path) => request('GET', path),
-  post: (path, body) => request('POST', path, body),
-  put: (path, body) => request('PUT', path, body),
-  delete: (path) => request('DELETE', path),
-  storeToken,
-  clearToken,
-  getToken,
-};

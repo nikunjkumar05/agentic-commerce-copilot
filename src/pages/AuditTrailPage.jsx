@@ -2,98 +2,11 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { db } from '@/services/db';
 import { format } from 'date-fns';
+import { toIst } from '@/lib/time';
 import { Shield, Zap, CheckCircle2, FileText, AlertTriangle, Link as LinkIcon, Loader2, Lock, ArrowDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { toast } from 'sonner';
-
-const LIABLE_PARTIES = ['buyer_agent', 'seller_agent', 'merchant', 'platform', 'none'];
-
-function LiabilityPanel() {
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ invoice_id: '', instruction: '', interpretation: '', action_taken: '', deviation: '', liable_party: 'none' });
-  const [saving, setSaving] = useState(false);
-  const [viewId, setViewId] = useState('');
-  const [report, setReport] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const headers = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('app_access_token')}` });
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-
-  const record = async () => {
-    if (!form.invoice_id.trim() || !form.instruction.trim() || !form.interpretation.trim() || !form.action_taken.trim()) {
-      toast.error('invoice, instruction, interpretation and action are required');
-      return;
-    }
-    setSaving(true);
-    try {
-      const res = await fetch('/api/audit/liability', { method: 'POST', headers: headers(), body: JSON.stringify(form) });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || 'Failed to record liability');
-      toast.success(`Liability recorded (${form.liable_party}). Heuristic suggests: ${data.suggested_party}`);
-      setForm({ invoice_id: form.invoice_id, instruction: '', interpretation: '', action_taken: '', deviation: '', liable_party: 'none' });
-    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
-  };
-
-  const load = async () => {
-    if (!viewId.trim()) return;
-    setLoading(true);
-    setReport(null);
-    try {
-      const res = await fetch(`/api/audit/liability/${encodeURIComponent(viewId.trim())}`, { headers: headers() });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || 'Failed to load report');
-      setReport(data);
-    } catch (e) { toast.error(e.message); } finally { setLoading(false); }
-  };
-
-  return (
-    <Card className="mt-3 border-purple-500/30">
-      <CardContent className="p-3">
-        <button onClick={() => setOpen((v) => !v)} className="text-xs font-bold text-purple-700 w-full text-left">
-          ⚖️ LIABILITY ATTRIBUTION (who pays when the agent is wrong?) {open ? '▾' : '▸'}
-        </button>
-        {open && (
-          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <p className="text-[11px] font-bold text-muted-foreground">RECORD (per disputed invoice)</p>
-              <Input placeholder="invoice_id" value={form.invoice_id} onChange={set('invoice_id')} className="h-8 text-xs" />
-              <Input placeholder="Agent received instruction…" value={form.instruction} onChange={set('instruction')} className="h-8 text-xs" />
-              <Input placeholder="Agent interpreted as…" value={form.interpretation} onChange={set('interpretation')} className="h-8 text-xs" />
-              <Input placeholder="Action taken…" value={form.action_taken} onChange={set('action_taken')} className="h-8 text-xs" />
-              <Input placeholder="Deviation (optional)" value={form.deviation} onChange={set('deviation')} className="h-8 text-xs" />
-              <select value={form.liable_party} onChange={set('liable_party')} className="w-full h-8 text-xs border rounded-md px-2 bg-background">
-                {LIABLE_PARTIES.map((p) => <option key={p} value={p}>{p}</option>)}
-              </select>
-              <Button size="sm" className="h-7 text-[11px]" disabled={saving} onClick={record}>{saving ? 'Recording...' : 'Record liability'}</Button>
-            </div>
-            <div className="space-y-2">
-              <p className="text-[11px] font-bold text-muted-foreground">REPORT (evidence for disputes)</p>
-              <div className="flex gap-2">
-                <Input placeholder="invoice_id" value={viewId} onChange={(e) => setViewId(e.target.value)} className="h-8 text-xs" />
-                <Button size="sm" variant="outline" className="h-8 text-[11px]" disabled={loading} onClick={load}>{loading ? '...' : 'Load'}</Button>
-              </div>
-              {report && (
-                <div className="text-xs space-y-2">
-                  <p><strong>{report.summary.total}</strong> entries · {Object.entries(report.summary.by_party).map(([k, v]) => `${k}:${v}`).join(' · ') || 'none'}</p>
-                  {(report.entries || []).map((e) => (
-                    <div key={e.id} className="border rounded-md p-2 bg-background">
-                      <Badge variant="outline" className="text-[10px]">{e.liable_party}</Badge>
-                      <p className="mt-1"><span className="text-muted-foreground">Heard:</span> {e.instruction}</p>
-                      <p><span className="text-muted-foreground">Did:</span> {e.action_taken}{e.deviation ? ` (Δ ${e.deviation})` : ''}</p>
-                    </div>
-                  ))}
-                  <p className="text-muted-foreground">{report.evidence?.length || 0} ledger rows corroborate this invoice.</p>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
 
 export default function AuditTrailPage() {
   const [isVerifying, setIsVerifying] = useState(false);
@@ -220,7 +133,6 @@ export default function AuditTrailPage() {
           ))}
         </div>
 
-        {/* Failure Theater: judge-visible kill-switches. Every toggle is audited server-side. */}
         <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-md">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <p className="text-xs font-bold text-amber-700">FAILURE THEATER (live kill-switches, audited)</p>
@@ -247,7 +159,6 @@ export default function AuditTrailPage() {
             LLM outage returns <span className="font-mono">fallback_mode:true</span> — the Agent Chat drops into manual cart checkout.
           </p>
         </div>
-        <LiabilityPanel />
       </div>
 
       {/* Timeline List */}
@@ -304,10 +215,10 @@ export default function AuditTrailPage() {
                       <CardContent className="p-4 space-y-3">
                         <div className="flex justify-between items-start">
                           <Badge variant="outline" className={`${config.color} border-current bg-transparent`}>
-                            {log.action.replace(/_/g, ' ').toUpperCase()}
+                            {(log.action || '').replace(/_/g, ' ').toUpperCase()}
                           </Badge>
-                          <span className="text-[10px] text-muted-foreground font-mono">
-                            {log.created_date ? format(new Date(log.created_date), 'dd MMM yyyy, HH:mm:ss') : 'Unknown Time'}
+                          <span className="text-[10px] text-muted-foreground font-mono" title={toIst(log.created_date)?.toISOString() || ''}>
+                            {log.created_date && toIst(log.created_date) ? format(toIst(log.created_date), "dd MMM yyyy, HH:mm:ss 'IST'") : 'Unknown Time'}
                           </span>
                         </div>
 

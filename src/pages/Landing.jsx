@@ -9,7 +9,7 @@ export default function Landing() {
   
   useEffect(() => {
     if (user) {
-      navigate(user.role === 'buyer' ? '/buyer' : '/merchant');
+      navigate(user.role === 'buyer' ? '/buyer/stores' : '/merchant');
     }
   }, [user, navigate]);
 

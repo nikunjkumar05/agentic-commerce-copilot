@@ -370,9 +370,87 @@ const [fallbackMode, setFallbackMode] = useState(false);
     const isBuyerGaveUp    = lastMsg.role === 'user' && lastMsg.content?.includes('HUMAN_INTERVENTION_REQUIRED');
     const isEscalationCard = lastMsg.uiType === 'auto_escalation';
     const isPaymentToolResult = lastMsg.role === 'tool' && lastMsg.name === 'trigger_payment';
+    // Invoice ready: the human must Approve/Reject the card — the loop must stop
+    // HERE, on the tool result. (Stopping only on the tool call never fires: the
+    // effect can't run mid-handleSend while isTyping is true.)
+    const isInvoiceReady = lastMsg.role === 'tool' && lastMsg.name === 'create_invoice' && lastMsg.uiType === 'invoice';
+    const isUpsellOffer = lastMsg.uiType === 'upsell_offer';
+    const isAgentDown = lastMsg.fallbackNotice === true || (lastMsg.role === 'assistant' && (lastMsg.content || '').includes("couldn't reach the agent right now"));
+    // Farewell-spin: once either side closes ("terminated", "no further action"...),
+    // every reply invites another farewell — stop instead of ping-ponging forever.
+    const isFarewell = /terminat|no further action|no response required|have a great day|conversation (closed|concluded)|chat (ended|concluded|terminated)/i.test(lastMsg.content || '');
+    // Turn cap: ~5 rounds is the longest useful negotiation; past 20 messages this
+    // run the agents are circling — halt and hand to the human via the card below.
+    let runStart = 0;
+    messages.forEach((m, i) => { if ((m.content || '').includes('[Auto-Negotiate Started]')) runStart = i; });
+    const isOverCap = messages.length - runStart > 20;
 
-    if (isInvoiceCreated || isPaymentTool || isPaymentTerminal || isBuyerGaveUp || isEscalationCard || isPaymentToolResult) {
+    if (isInvoiceCreated || isPaymentTool || isPaymentTerminal || isBuyerGaveUp || isEscalationCard || isPaymentToolResult || isAgentDown || isFarewell || isInvoiceReady || isUpsellOffer) {
       setIsAutoActive(false);
+      return;
+    }
+    // Deterministic floor extractor: sentence-level, so the budget cap
+    // mentioned in the same message never poisons the floor amount.
+    // Prefers "₹X pre-GST" in the floor sentence; falls back to first ₹ in that sentence.
+    const getFloorPre = (fromIdx) => {
+      for (let i = messages.length - 1; i >= fromIdx; i--) {
+        const m = messages[i];
+        if (m.role !== 'assistant' || !m.content) continue;
+        for (const sent of m.content.split(/[.!?\n]+/)) {
+          if (!/floor|minimum|lowest|break-?even|cost basis|absolute minimum|margin floor/i.test(sent)) continue;
+          const pre = [...sent.matchAll(/₹\s*([\d,]+)\s*(?:pre-GST|before GST|pre GST)/gi)];
+          if (pre.length) return parseInt(pre[0][1].replace(/,/g, ''), 10);
+          const any = sent.match(/₹\s*([\d,]+)/);
+          if (any) return parseInt(any[1].replace(/,/g, ''), 10);
+        }
+      }
+      return null;
+    };
+    // Buyer intent in its own words: the exact magic string is unreliable (the
+    // model paraphrases), so match escalation / walk-away intent on buyer turns
+    // and card it — conditional threats ("if... walk away") don't count.
+    // Before carding, deterministic escalation audit: if the merchant's stated
+    // floor actually FITS the cap (floor×1.18 ≤ budget), block the escalation
+    // and steer the buyer to accept. Catches the "7200 ≤ 8474 but still over"
+    // hallucination and the inverted-cap "8474 incl GST (=7164 pre-GST)" lie.
+    if (lastMsg.buyerTurn) {
+      const t = lastMsg.content || '';
+      const decisive = /HUMAN_INTERVENTION_REQUIRED|should we increase the budget/i.test(t)
+        || (/walk away/i.test(t) && !/if\b[^.!?]*walk away/i.test(t));
+      if (decisive) {
+        const floorPre = getFloorPre(runStart);
+        if (floorPre && Number.isFinite(floorPre) && autoBudget > 0) {
+          const floorTotal = floorPre + Math.round(floorPre * 18 / 100);
+          if (floorTotal <= autoBudget) {
+            const acceptAt = `Perfect, please create the invoice at ₹${floorPre}.`;
+            handleSend(null, acceptAt, false, true);
+            return;
+          }
+        }
+        const alreadyCard = messages.slice(runStart).some(m => m.uiType === 'auto_escalation');
+        setIsAutoActive(false);
+        if (!alreadyCard) {
+          setMessages(prev => [...prev, {
+            role: 'user',
+            content: "⚠️ **Budget ceiling hit.** The merchant's floor price is above our cap.",
+            uiType: 'auto_escalation',
+            uiData: { goal: autoGoal, budget: autoBudget }
+          }]);
+        }
+        return;
+      }
+    }
+    if (isOverCap) {
+      const alreadyCard = messages.slice(runStart).some(m => m.uiType === 'auto_escalation');
+      setIsAutoActive(false);
+      if (!alreadyCard) {
+        setMessages(prev => [...prev, {
+          role: 'user',
+          content: '⚠️ Auto-negotiation stopped after 20 turns without agreement.',
+          uiType: 'auto_escalation',
+          uiData: { goal: autoGoal, budget: autoBudget }
+        }]);
+      }
       return;
     }
 
@@ -386,14 +464,25 @@ const [fallbackMode, setFallbackMode] = useState(false);
         setIsTyping(true);
         try {
           const token = localStorage.getItem('app_access_token');
+          // Current-run context only: full history carries stale caps (e.g. a
+          // prior run's pre-GST number) that the buyer reuses as its budget.
+          let cut = 0;
+          messages.forEach((m, i) => { if ((m.content || '').includes('[Auto-Negotiate Started]')) cut = i; });
           const res = await fetch('/api/agent/buyer-chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
-            body: JSON.stringify({ goal: autoGoal, budget: autoBudget, messages })
+            body: JSON.stringify({ goal: autoGoal, budget: autoBudget, messages: messages.slice(cut) })
           });
           const buyerMsg = await res.json();
           if (buyerMsg && buyerMsg.content) {
             if (buyerMsg.content.includes('HUMAN_INTERVENTION_REQUIRED')) {
+               // Same audit as buyerTurn path — block false HUMAN escalations where floor fits
+               const fp = getFloorPre(cut);
+               if (fp && Number.isFinite(fp) && autoBudget > 0 && (fp + Math.round(fp * 18 / 100) <= autoBudget)) {
+                 setIsTyping(false);
+                 handleSend(null, `Perfect, please create the invoice at ₹${fp}.`, false, true);
+                 return;
+               }
                setMessages(prev => [...prev, {
                  role: 'user',
                  content: "⚠️ **Budget ceiling hit.** The merchant's floor price is above our cap.",
@@ -404,7 +493,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                setIsTyping(false);
             } else {
                // Pass buyer reply through merchant chat (normal flow)
-               handleSend(null, buyerMsg.content);
+               handleSend(null, buyerMsg.content, false, true);
             }
           } else {
              setIsAutoActive(false);
@@ -421,7 +510,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, isAutoActive, isTyping, autoGoal, autoBudget]);
 
-  const handleSend = async (e, overrideText = null, merchantContinue = false) => {
+  const handleSend = async (e, overrideText = null, merchantContinue = false, buyerTurn = false) => {
     e?.preventDefault();
     if (!merchantContinue && !overrideText && !input.trim()) return;
 
@@ -453,6 +542,11 @@ const [fallbackMode, setFallbackMode] = useState(false);
         }
       } catch(err) {
         console.error(err);
+        setIsAutoActive(false);
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `Auto-negotiation paused: couldn't reach the agent right now. Resume with /auto <budget> <goal>.`
+        }]);
       } finally {
         setIsTyping(false);
       }
@@ -480,12 +574,11 @@ const [fallbackMode, setFallbackMode] = useState(false);
        }).catch(() => {}); // non-blocking — best effort
        
        const startMsg = `[Auto-Negotiate Started] Goal: ${goal}, Budget: ₹${budget}\nHi, I want to purchase ${goal}. My budget is strict.`;
-       handleSend(null, startMsg);
-       return;
+       return handleSend(null, startMsg);
     }
 
     
-    const newMessages = [...messages, { role: 'user', content: userText }];
+    const newMessages = [...messages, { role: 'user', content: userText, ...(buyerTurn ? { buyerTurn: true } : {}) }];
     setMessages(newMessages);
     setIsTyping(true);
 
@@ -625,6 +718,17 @@ const [fallbackMode, setFallbackMode] = useState(false);
               }
               const reason = args.reason || 'It pairs well with your purchase and avoids gaps in coverage.';
 
+              // Auto-mode veto: an add-on that alone blows the cap is never shown.
+              if (recommendation && isAutoActive && autoBudget > 0 && Number(recommendation.price) * 1.18 > autoBudget) {
+                setMessages(prev => [...prev, {
+                  role: 'tool',
+                  tool_call_id: call.id,
+                  name: 'suggest_upsell_bundle',
+                  content: `VETOED: ${recommendation.name} (₹${recommendation.price}) alone exceeds the buyer's strict ₹${autoBudget} cap. Recommend nothing — the buyer wants the main product only.`
+                }]);
+                continue;
+              }
+
               const toolResponse = `Recommended: ${recommendation.name} (₹${recommendation.price}) — ${reason}`;
 
               setMessages(prev => [...prev, {
@@ -708,6 +812,44 @@ const [fallbackMode, setFallbackMode] = useState(false);
             
             const grand_total = subtotal + tax_total;
             const itemNames = line_items.map(i => i.sku || i.description).join(' + ');
+
+            // Auto-mode budget guard: deterministic, not prompt-based. The LLM
+            // keeps comparing pre-GST prices against the GST-inclusive cap and
+            // minting invoices that die later at the delegation gate — fail fast
+            // with a steer-back so negotiation continues instead of blocking at payment.
+            if (isAutoActive && autoBudget > 0 && grand_total > autoBudget) {
+              setMessages(prev => [...prev, {
+                role: 'tool',
+                tool_call_id: call.id,
+                name: 'create_invoice',
+                content: `BLOCKED: this invoice totals ₹${grand_total} incl. GST, above the buyer's strict ₹${autoBudget} cap. Do NOT create the invoice. Lower the unit price to ≤ ₹${Math.floor(autoBudget / 1.18)} pre-GST or remove items, then call create_invoice again.`
+              }]);
+              continue;
+            }
+
+            // Auto-mode upsell checkpoint: a multi-item (bundle) invoice needs
+            // human eyes — pause with an approve/main-only card instead of minting.
+            if (isAutoActive && line_items.length > 1) {
+              setMessages(prev => [...prev, {
+                role: 'tool',
+                tool_call_id: call.id,
+                name: 'create_invoice',
+                content: `Bundle proposed (${itemNames}) totaling ₹${grand_total} incl. GST against a ₹${autoBudget} cap — waiting for human approval.`,
+                uiType: 'upsell_offer',
+                uiData: {
+                  goal: autoGoal, budget: autoBudget,
+                  items: line_items, subtotal, tax_total, grand_total,
+                  merchant_id: localStorage.getItem('agent_selected_merchant') || undefined,
+                  institution_name: profile.name || 'AgentPay Gateway',
+                  institution_address: profile.address || 'New Delhi, India',
+                  gst_number: profile.gst || '07AAACN0372J1ZB',
+                  recipient_name: buyerProfile.name || 'AI Agent Buyer',
+                  recipient_address: buyerProfile.address || 'New Delhi, India',
+                  is_ai_upsell: args.is_ai_upsell || false
+                }
+              }]);
+              continue;
+            }
 
             try {
               const newInvoice = await db.entities.Invoice.create({
@@ -843,6 +985,21 @@ const [fallbackMode, setFallbackMode] = useState(false);
               continue;
             }
 
+            // Auto-mode hold: invoice approval is human-only. The loop stops at the
+            // invoice card, but same-batch (create+pay together) calls run inside one
+            // handleSend pass — hold them so payment can never fire before Approve/Reject.
+            if (isAutoActive) {
+              setMessages(prev => [...prev, {
+                role: 'tool',
+                tool_call_id: call.id,
+                name: 'trigger_payment',
+                content: 'HELD: autonomous payment is disabled while auto-negotiation runs. The invoice card needs human Approve or Reject first.',
+                uiType: 'payment_blocked',
+                uiData: { id: targetId, message: 'Payment needs human approval — use Approve & Pay Now or Reject on the invoice card.' }
+              }]);
+              continue;
+            }
+
             // Ensure backend bounds are the single source of truth
 
             try {
@@ -904,6 +1061,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
         }
       } catch (err) {
       console.error(err);
+      setIsAutoActive(false);
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: `Sorry, I couldn't reach the agent right now: ${err.message || 'unknown error'}`
@@ -946,9 +1104,12 @@ const [fallbackMode, setFallbackMode] = useState(false);
         {messages.map((msg, idx) => (
           <div key={idx} className={`flex items-start gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
             <div className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} max-w-[80%]`}>
+              {msg.buyerTurn && (
+                <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-full px-2 py-0.5 mb-1">Buyer Agent</span>
+              )}
               {msg.content && (
                 <div className={`px-4 py-3 rounded-2xl text-sm shadow-sm ${msg.role === 'user' ? 'bg-muted text-foreground rounded-tr-sm' : 'bg-card border rounded-tl-sm'}`}>
-                  {msg.role === 'user' ? (
+                  {msg.role === 'user' && !msg.buyerTurn ? (
                     msg.content
                   ) : (
                     <div className="[&>p]:mb-2 last:[&>p]:mb-0 [&>ul]:list-disc [&>ul]:ml-5 [&>ul]:mb-2 [&>ol]:list-decimal [&>ol]:ml-5 [&>ol]:mb-2 [&_li]:mb-1 [&_strong]:font-bold [&_em]:italic [&>h1]:text-lg [&>h1]:font-bold [&>h1]:mb-2 [&>h2]:text-base [&>h2]:font-bold [&>h2]:mb-2 [&>h3]:text-sm [&>h3]:font-bold [&>h3]:mb-1 [&>h4]:text-sm [&>h4]:font-bold [&>h4]:mb-1 [&_a]:text-primary [&_a]:underline [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-[13px] [&_code]:font-mono [&>pre]:bg-muted [&>pre]:p-2 [&>pre]:rounded-lg [&>pre]:overflow-x-auto [&>pre]:mb-2 [&>pre_code]:bg-transparent [&>pre_code]:p-0">
@@ -1128,11 +1289,12 @@ const [fallbackMode, setFallbackMode] = useState(false);
                        </div>
                        <span className="text-sm font-bold text-green-800">Payment Successful</span>
                     </div>
-                    {msg.uiData.tx_id && (
+                     {msg.uiData.tx_id && (
                        <div className="bg-white/80 p-2 rounded-md text-xs font-mono text-green-700 border border-green-100 break-all shadow-inner">
                          TX: {msg.uiData.tx_id}
                        </div>
-                    )}
+                     )}
+                     <p className="text-xs text-green-700">Invoice sent to your mail.</p>
                     <div className="flex gap-2">
                       <Button size="sm" className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs h-9 shadow-sm" onClick={() => navigate(`/invoice/${msg.uiData.id}`)}>
                         View Invoice
@@ -1222,6 +1384,78 @@ const [fallbackMode, setFallbackMode] = useState(false);
                       <Button size="sm" variant="outline" className="flex-1 text-xs h-9 border-red-200" onClick={() => navigate(`/invoice/${msg.uiData.id}`)}>
                         View Invoice
                       </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {msg.uiType === 'upsell_offer' && msg.uiData && (
+                <div className="w-full mt-2 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                  <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-xl space-y-3">
+                    <div className="flex items-center gap-2">
+                       <div className="w-6 h-6 rounded-full bg-indigo-500 text-white flex items-center justify-center text-xs font-bold">?</div>
+                       <span className="text-sm font-bold text-indigo-900">Bundle proposed — your call</span>
+                    </div>
+                    <div className="text-xs text-indigo-800 space-y-1">
+                      {(msg.uiData.items || []).map((it, i) => (
+                        <div key={i} className="flex justify-between gap-2">
+                          <span className="truncate">{it.description} × {it.quantity}</span>
+                          <span className="font-mono">₹{Number(it.total).toLocaleString('en-IN')}</span>
+                        </div>
+                      ))}
+                      <div className="flex justify-between gap-2 pt-1 border-t border-indigo-200 font-bold">
+                        <span>Total incl. GST (cap ₹{Number(msg.uiData.budget).toLocaleString('en-IN')})</span>
+                        <span className="font-mono">₹{Number(msg.uiData.grand_total).toLocaleString('en-IN')}</span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs h-9" onClick={async () => {
+                        try {
+                          const d = msg.uiData;
+                          const newInvoice = await db.entities.Invoice.create({
+                            merchant_id: d.merchant_id,
+                            invoice_number: 'INV-' + Math.floor(Math.random() * 100000),
+                            institution_name: d.institution_name, institution_address: d.institution_address, gst_number: d.gst_number,
+                            recipient_name: d.recipient_name, recipient_address: d.recipient_address, recipient_gst: '',
+                            line_items: d.items, subtotal: d.subtotal, tax_total: d.tax_total, grand_total: d.grand_total,
+                            currency: 'INR', status: 'draft',
+                            invoice_date: new Date().toISOString(), due_date: new Date(Date.now() + 30 * 86400000).toISOString(),
+                            is_ai_upsell: d.is_ai_upsell || false
+                          });
+                          setLastInvoiceId(newInvoice.id);
+                          setMessages(prev => [...prev, {
+                            role: 'tool', tool_call_id: 'human-bundle-approve', name: 'create_invoice',
+                            content: `Human approved the bundle — invoice ${newInvoice.invoice_number} created.`,
+                            uiType: 'invoice', uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number }
+                          }]);
+                          toast.success('Bundle invoice created');
+                        } catch (e) { toast.error(e.message || 'Could not create bundle invoice'); }
+                      }}>Add & Invoice</Button>
+                      <Button size="sm" variant="outline" className="flex-1 text-xs h-9" onClick={async () => {
+                        try {
+                          const d = msg.uiData;
+                          const main = (d.items || []).slice(0, 1);
+                          const sub = main.reduce((s, it) => s + Number(it.total || 0), 0);
+                          const tax = main.reduce((s, it) => s + Math.round(Number(it.total || 0) * 18 / 100), 0);
+                          const newInvoice = await db.entities.Invoice.create({
+                            merchant_id: d.merchant_id,
+                            invoice_number: 'INV-' + Math.floor(Math.random() * 100000),
+                            institution_name: d.institution_name, institution_address: d.institution_address, gst_number: d.gst_number,
+                            recipient_name: d.recipient_name, recipient_address: d.recipient_address, recipient_gst: '',
+                            line_items: main, subtotal: sub, tax_total: tax, grand_total: sub + tax,
+                            currency: 'INR', status: 'draft',
+                            invoice_date: new Date().toISOString(), due_date: new Date(Date.now() + 30 * 86400000).toISOString(),
+                            is_ai_upsell: false
+                          });
+                          setLastInvoiceId(newInvoice.id);
+                          setMessages(prev => [...prev, {
+                            role: 'tool', tool_call_id: 'human-main-only', name: 'create_invoice',
+                            content: `Human chose main product only — invoice ${newInvoice.invoice_number} created.`,
+                            uiType: 'invoice', uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number }
+                          }]);
+                          toast.success('Main-product invoice created');
+                        } catch (e) { toast.error(e.message || 'Could not create invoice'); }
+                      }}>Main only</Button>
                     </div>
                   </div>
                 </div>

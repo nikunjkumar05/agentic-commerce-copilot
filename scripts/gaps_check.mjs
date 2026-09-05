@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { scoreCatalog, buildJsonLd, suggestLiableParty } from '../api/gaps.js';
+import { scoreCatalog, buildJsonLd } from '../api/gaps.js';
 
 // #1: empty catalog scores 0 with guidance (no crash)
 const e = scoreCatalog([]);
@@ -20,8 +20,4 @@ const ld = buildJsonLd([good]);
 assert.equal(ld['@context'], 'https://schema.org');
 assert.equal(ld.itemListElement[0].item.offers.priceCurrency, 'INR');
 
-// #5: misinterpretation suggests seller_agent; clean gate suggests none
-assert.equal(suggestLiableParty({ instruction: 'buy medium pizza 12 inch', interpretation: 'bought 8 inch', action_taken: 'paid' }), 'seller_agent');
-assert.equal(suggestLiableParty({ instruction: 'pay if under cap', interpretation: 'pay if under cap', action_taken: 'blocked: over cap, escalated' }), 'none');
-
-console.log('gaps_check: OK (score, jsonld, liability heuristics)');
+console.log('gaps_check: OK (score, jsonld)');

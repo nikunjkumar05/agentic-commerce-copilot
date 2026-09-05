@@ -195,9 +195,9 @@ export default function Campaigns() {
             </div>
             <div className="flex gap-2 pt-2">
               <Button size="sm" onClick={() => saveMutation.mutate(formData)} disabled={!formData.name || formData.upsell_product_ids.length === 0 || formData.target_statuses.length === 0 || saveMutation.isLoading}>
-                {saveMutation.isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3 mr-1" />} {editId ? 'Save Changes' : 'Save Draft'}
+                {saveMutation.isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3 mr-1" />} {saveMutation.isLoading ? 'Saving…' : (editId ? 'Save Changes' : 'Save Draft')}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => { setIsNew(false); setEditId(null); }}>Cancel</Button>
+              <Button variant="ghost" size="sm" onClick={() => { setIsNew(false); setEditId(null); }} disabled={saveMutation.isLoading}>Cancel</Button>
             </div>
           </CardContent>
         </Card>

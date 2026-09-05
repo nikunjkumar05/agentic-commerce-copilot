@@ -4,7 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
-import { Plus, Trash2, Package, Tag, Sparkles, Loader2 } from 'lucide-react';
+import { Plus, Trash2, Package, Tag, Sparkles, Loader2, Pencil } from 'lucide-react';
 
 const authHeaders = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('app_access_token')}` });
 
@@ -31,7 +31,6 @@ function SellabilityPanel({ catalog }) {
   const fixMutation = useMutation({
     mutationFn: async () => {
       const missing = (catalog || []).filter((p) => !p.hsn_code).map((p) => ({ id: p.id, hsn_code: '998313' }));
-      if (missing.length === 0) throw new Error('Nothing to auto-fix');
       const res = await fetch('/api/merchant/sellability/fix', {
         method: 'POST', headers: authHeaders(), body: JSON.stringify({ updates: missing })
       });
@@ -41,11 +40,11 @@ function SellabilityPanel({ catalog }) {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['sellability'] });
       queryClient.invalidateQueries({ queryKey: ['catalog'] });
-      toast.success(`Auto-fix applied: ${data.fixed} edited, ${data.hsn_defaulted} HSN defaulted. Score ${data.score}/100`);
+      toast.success(`Auto-fix applied: ${data.adopted || 0} adopted, ${data.desc_backfilled || 0} descriptions fixed, ${data.hsn_defaulted} HSN defaulted. Score ${data.score}/100`);
     },
     onError: (e) => toast.error(e.message || 'Auto-fix failed')
   });
-  const missingHsn = (catalog || []).filter((p) => !p.hsn_code).length;
+  const issueCount = score?.issues?.length || 0;
 
   return (
     <Card className="border-emerald-200 shadow-sm">
@@ -62,7 +61,7 @@ function SellabilityPanel({ catalog }) {
           <p className="text-sm text-muted-foreground animate-pulse">Scanning catalog for AI-readiness...</p>
         ) : score ? (
           <>
-            <p className="text-sm text-muted-foreground">{score.product_count} products scanned. {score.issues?.length || 0} need fixes.</p>
+            <p className="text-sm text-muted-foreground">{score.product_count} products scanned. {score.issues?.length || 0} need fixes.{score.scoped === 'global' ? ' Scoring shared catalog (no products under your account yet).' : ''}</p>
             {(score.issues || []).slice(0, 5).map((issue, i) => (
               <div key={i} className="text-sm bg-amber-500/10 border border-amber-500/30 rounded-md p-2">
                 <p className="font-bold">{issue.name || issue.sku || 'Unnamed product'}</p>
@@ -71,9 +70,9 @@ function SellabilityPanel({ catalog }) {
             ))}
             {(score.questions || []).map((q, i) => <p key={i} className="text-sm text-blue-700">💬 {q}</p>)}
             <div className="flex gap-2 flex-wrap">
-              <Button size="sm" onClick={() => fixMutation.mutate()} disabled={fixMutation.isPending || missingHsn === 0}>
+              <Button size="sm" onClick={() => fixMutation.mutate()} disabled={fixMutation.isPending || issueCount === 0}>
                 {fixMutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                {missingHsn === 0 ? 'Catalog is AI-ready' : `Auto-fix ${missingHsn} missing HSN`}
+                {issueCount === 0 ? 'Catalog is AI-ready' : score?.scoped === 'global' ? `Adopt catalog & auto-fix (${score.product_count} products)` : `Auto-fix ${issueCount} issue${issueCount === 1 ? '' : 's'}`}
               </Button>
               <Button size="sm" variant="outline" onClick={() => setShowJsonLd((v) => !v)}>
                 {showJsonLd ? 'Hide JSON-LD' : 'View JSON-LD (what AI buyers read)'}
@@ -126,6 +125,29 @@ export default function CatalogManager() {
     onError: () => toast.error('Failed to add product')
   });
 
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, ...fields }) => {
+      const token = localStorage.getItem('app_access_token');
+      const res = await fetch(`/api/catalog/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(fields)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'Failed to update product');
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['catalog'] });
+      queryClient.invalidateQueries({ queryKey: ['sellability'] });
+      setIsAdding(false);
+      setEditingId(null);
+      setFormData({ name: '', description: '', price: '', margin_floor: '' });
+      toast.success('Product updated successfully');
+    },
+    onError: (e) => toast.error(e.message || 'Failed to update product')
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (id) => {
       const token = localStorage.getItem('app_access_token');
@@ -149,18 +171,37 @@ export default function CatalogManager() {
       toast.error('Please fill all required fields');
       return;
     }
-    addMutation.mutate({
+    const fields = {
       name: formData.name,
       description: formData.description,
       price: Number(formData.price),
       margin_floor: Number(formData.margin_floor)
+    };
+    if (editingId) updateMutation.mutate({ id: editingId, ...fields });
+    else addMutation.mutate(fields);
+  };
+
+  const startEdit = (product) => {
+    setEditingId(product.id);
+    setFormData({
+      name: product.name || '',
+      description: product.description || '',
+      price: String(product.price ?? ''),
+      margin_floor: String(product.margin_floor ?? '')
     });
+    setIsAdding(true);
+  };
+
+  const cancelForm = () => {
+    setIsAdding(false);
+    setEditingId(null);
+    setFormData({ name: '', description: '', price: '', margin_floor: '' });
   };
 
   if (isLoading) return <div className="p-8 text-center text-muted-foreground animate-pulse">Loading catalog...</div>;
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6 px-4 sm:px-6 py-4">
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Catalog Manager</h2>
@@ -175,7 +216,7 @@ export default function CatalogManager() {
         <Card className="border-indigo-200 shadow-sm animate-in fade-in zoom-in-95 duration-200">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
-              <Package className="w-5 h-5 text-indigo-600" /> New Product
+              <Package className="w-5 h-5 text-indigo-600" /> {editingId ? 'Edit Product' : 'New Product'}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -218,7 +259,7 @@ export default function CatalogManager() {
                 </div>
               </div>
               <div className="flex gap-2 justify-end pt-2">
-                <Button variant="ghost" type="button" onClick={() => setIsAdding(false)}>Cancel</Button>
+                <Button variant="ghost" type="button" onClick={cancelForm}>Cancel</Button>
                 <Button type="submit" className="bg-indigo-600 hover:bg-indigo-700">Save Product</Button>
               </div>
             </form>
@@ -236,16 +277,26 @@ export default function CatalogManager() {
                 <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center shrink-0">
                   <Package className="w-5 h-5 text-indigo-600" />
                 </div>
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  className="h-8 w-8 text-red-400 hover:text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
-                  onClick={() => {
-                    if(confirm('Delete this product?')) deleteMutation.mutate(product.id);
-                  }}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
+                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50"
+                    onClick={() => startEdit(product)}
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-red-400 hover:text-red-600 hover:bg-red-50"
+                    onClick={() => {
+                      if(confirm('Delete this product?')) deleteMutation.mutate(product.id);
+                    }}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </div>
               </div>
               <h3 className="font-bold text-base leading-tight mt-1 line-clamp-2">{product.name}</h3>
               <p className="text-sm text-muted-foreground mt-2 line-clamp-3 flex-1">{product.description}</p>

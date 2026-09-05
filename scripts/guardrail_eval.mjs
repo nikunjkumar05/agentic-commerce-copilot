@@ -82,6 +82,92 @@ process.env.RAZORPAY_KEY_SECRET = 'eval-key-secret';
   check('offline', 'webhook_idempotency_key separates events', key('payment.captured', 1, 'pay_1') !== key('payment.captured', 1, 'pay_2'));
 }
 
+// A6: negotiation GST arithmetic (exact totals the agents keep getting wrong)
+// 7200 pre -> 8496 total (the floor that keeps being mis-quoted as 8436),
+// 9000 pre -> 10620 total, 7650 incl-GST handling, budget-guard ceiling math.
+{
+  const total = (pre) => pre + Math.round(pre * 18 / 100);
+  const ceiling = (cap) => Math.floor(cap / 1.18);
+  check('offline', 'gst_total 7200 pre -> 8496 total (floor truth)', total(7200) === 8496);
+  check('offline', 'gst_total 9000 pre -> 10620 total', total(9000) === 10620);
+  check('offline', 'gst_total 8550 pre -> 10089 total', total(8550) === 10089);
+  check('offline', 'budget ceiling 10000 -> 8474 pre-GST cap', ceiling(10000) === 8474);
+  check('offline', 'budget ceiling 7500 -> 6355 pre-GST cap', ceiling(7500) === 6355);
+  check('offline', 'budget ceiling 12000 -> 10169 pre-GST cap', ceiling(12000) === 10169);
+  // Inverted-cap lie: merchant says "8474 incl GST (=7164 pre)" — audit must not trust framing
+  // floor 7200 pre (8496 total) FITS 10000 cap, even though merchant claims "above target"
+  check('offline', 'escalation_audit: floor 7200 fits 10000 cap (blocks false escalation)', total(7200) <= 10000);
+  check('offline', 'escalation_audit: floor 7200 exceeds 7500 cap (genuine escalation)', total(7200) > 7500);
+  // Hallucinated below-floor 7000 would be 8260 total — server must reject it
+  check('offline', 'below_floor 7000 hallucination total 8260 (margin violation, not budget)', total(7000) === 8260);
+}
+// A7: escalation-audit floor extraction (sentence-level, so the cap in the same message never poisons the floor)
+{
+  const extractFloor = (msgs) => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role !== 'assistant' || !m.content) continue;
+      for (const sent of m.content.split(/[.!?\n]+/)) {
+        if (!/floor|minimum|lowest|break-?even|cost basis|absolute minimum|margin floor/i.test(sent)) continue;
+        const preMarked = [...sent.matchAll(/₹\s*([\d,]+)\s*(?:pre-GST|before GST|pre GST)/gi)];
+        if (preMarked.length) return parseInt(preMarked[0][1].replace(/,/g, ''), 10);
+        const any = sent.match(/₹\s*([\d,]+)/);
+        if (any) return parseInt(any[1].replace(/,/g, ''), 10);
+      }
+    }
+    return null;
+  };
+  const runMsgs = [
+    { role: 'assistant', content: 'The Compliance Audit is priced at ₹9,000 before GST.' },
+    { role: 'assistant', content: 'The absolute minimum I can offer for the Compliance Audit is ₹7,200 before GST (margin floor). This is our cost basis.' },
+    { role: 'assistant', content: 'Since ₹7,200 exceeds your pre-GST limit of ₹6,355, I recommend...' },
+  ];
+  check('offline', 'floor_extraction: ₹7,200 pre-GST from margin floor line', extractFloor(runMsgs) === 7200);
+  const invertedMsgs = [
+    { role: 'assistant', content: 'Since this is still above your target of ₹8,474 including GST (₹7,164 pre-GST), I cannot offer lower.' },
+    { role: 'assistant', content: 'The margin floor for the Compliance Audit is ₹7,200 before GST. Since this is still above your target...' },
+  ];
+  check('offline', 'floor_extraction: picks floor ₹7,200 not inverted cap ₹8,474', extractFloor(invertedMsgs) === 7200);
+  // Same-message poison: floor and cap in one message — sentence split must still pick floor
+  const sameMsgPoison = [
+    { role: 'assistant', content: 'The absolute minimum is ₹7,200 pre-GST (margin floor). Since your cap is ₹8,474 pre-GST, this exceeds your limit.' },
+  ];
+  check('offline', 'floor_extraction: same-message cap does not poison floor', extractFloor(sameMsgPoison) === 7200);
+  // Fallback: floor sentence without pre-GST tag (e.g. "₹7,200 (margin floor)")
+  const fallbackMsg = [
+    { role: 'assistant', content: 'The lowest I can go is ₹7,200 (margin floor).' },
+  ];
+  check('offline', 'floor_extraction: fallback without pre-GST tag still extracts', extractFloor(fallbackMsg) === 7200);
+  const hallucinatedRun = [
+    { role: 'assistant', content: 'I can offer ₹7,000 pre-GST, which is a 15% discount.' },
+  ];
+  // 7000 has no floor keyword — extraction returns null, audit fails safe (falls through to card, never auto-accepts)
+  check('offline', 'floor_extraction: 7000 without floor keyword fails safe (null)', extractFloor(hallucinatedRun) === null);
+  const total = (pre) => pre + Math.round(pre * 18 / 100);
+  // Matrix: floor fits vs exceeds
+  check('offline', 'audit decision: floor 7200 (8496) vs cap 10000 -> accept (no escalation)', total(extractFloor(runMsgs)) <= 10000);
+  check('offline', 'audit decision: floor 7200 (8496) vs cap 7500 -> escalate (card)', total(7200) > 7500);
+}
+// A8: S2S capture binding — re-fetched payment must match order amount + order_id (Razorpay docs: Orders amount in paise, payment carries order_id)
+{
+  const totalPaise = (inr) => Math.round(inr * 100);
+  const verifyBinding = (orderId, totalP, payment) => {
+    if (payment.status !== 'captured') return false;
+    if (Number(payment.amount) !== totalP) return false;
+    if (payment.order_id !== orderId) return false;
+    return true;
+  };
+  const orderId = 'order_RB58MiP5SPFYyM';
+  const good = { id: 'pay_1', status: 'captured', amount: totalPaise(8496), order_id: orderId };
+  const wrongAmt = { id: 'pay_2', status: 'captured', amount: totalPaise(9000), order_id: orderId };
+  const wrongOrder = { id: 'pay_3', status: 'captured', amount: totalPaise(8496), order_id: 'order_OTHER' };
+  const notCaptured = { id: 'pay_4', status: 'authorized', amount: totalPaise(8496), order_id: orderId };
+  check('offline', 's2s_binding: correct amount+order+status passes', verifyBinding(orderId, totalPaise(8496), good));
+  check('offline', 's2s_binding: amount mismatch rejected', !verifyBinding(orderId, totalPaise(8496), wrongAmt));
+  check('offline', 's2s_binding: order_id mismatch rejected', !verifyBinding(orderId, totalPaise(8496), wrongOrder));
+  check('offline', 's2s_binding: non-captured rejected', !verifyBinding(orderId, totalPaise(8496), notCaptured));
+}
+
 // ---------- Section B: live probes (opt-in) ----------
 const BASE = process.env.EVAL_API_BASE;
 const JWT = process.env.EVAL_JWT;

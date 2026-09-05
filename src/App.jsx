@@ -21,6 +21,7 @@ import InvoiceDetail from '@/pages/InvoiceDetail';
 import StoragePage from '@/pages/StoragePage';
 import SettingsPage from '@/pages/SettingsPage';
 import AgentChat from '@/pages/AgentChat';
+import MerchantPicker from '@/pages/MerchantPicker';
 import BuyerOrders from '@/pages/BuyerOrders';
 import BuyerSettings from '@/pages/BuyerSettings';
 import AuditTrailPage from '@/pages/AuditTrailPage';
@@ -65,6 +66,7 @@ const AuthenticatedApp = () => {
         <Route element={<AppLayout />}>
           <Route path="/merchant" element={<Dashboard />} />
           <Route path="/buyer" element={<AgentChat />} />
+          <Route path="/buyer/stores" element={<MerchantPicker />} />
           <Route path="/buyer/orders" element={<BuyerOrders />} />
           <Route path="/buyer/settings" element={<BuyerSettings />} />
           <Route path="/merchant/campaigns" element={<Campaigns />} />

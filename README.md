@@ -59,13 +59,13 @@ To standardize how AI agents transact on Indian rails, we are open-sourcing a dr
 7. Open the **Audit Trail** page → click **Verify Integrity** → *"Chain Validated"*.
 8. Tamper with any audit row directly in the database (e.g. change an `amount`), then verify again — the chain **mathematically detects and pinpoints the tampered entry**.
 
-### Run our engineering tests
+### Verify from the UI only (no terminal trial scripts)
+1. **Safety Gate:** Settings → caps ₹50,000 → Agent Chat *"invoice for ₹1,00,000 and pay it"* → 403 `settlement_blocked` in Audit Trail.
+2. **Settle:** *"invoice for ₹5,000 and pay it"* → real `pay_...` (mandate) or `plink_...` (escalation).
+3. **Ledger:** Audit Trail → Verify Integrity → "Chain Validated".
+4. **New agents:** Catalog → AI-Sellability Score + Auto-fix.
 ```bash
-node test-rzp.mjs       # Verify Razorpay integration keys & webhooks
-node test-tok.mjs       # Verify Razorpay recurring mandate token S2S calls
-node test-pay.mjs       # End-to-end payment creation test (idempotency checked)
-node test-charge.mjs    # Agent safety gate bounds test via direct API charge
-node test-schema.mjs    # Validate PostgreSQL DDL schema & constraints
+node scripts/gaps_check.mjs   # stateless self-check: score, JSON-LD
 ```
 
 📖 Deep dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · 5-minute pitch script: [docs/PITCH_VIDEO_SCRIPT.md](docs/PITCH_VIDEO_SCRIPT.md)

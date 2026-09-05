@@ -7,14 +7,11 @@
 
 Show: Dashboard → one line: "Agentic Commerce Co-Pilot — **every money action explainable, bounded, gated, cryptographically audited**."
 
-## [0:20–1:50] Foreign agent buys end to end (the track, verbatim)
-Terminal — a buyer with no account, no cookies, just `curl`:
-```bash
-node scripts/agent_buyer_simulation.mjs   # catalog → 402 challenge → settle
-```
-- Show the `Www-Authenticate: Razorpay order_id=...` header, then the settle: real `pay_...` (mandate bound) or real `plink_...` escalation (no mandate).
-- Two **distinct identities**: merchant books, buyer recipient; ledger entries on **both** sides.
-- Narration: "Make a merchant transactable by an AI buyer end to end — done, with zero onboarding."
+## [0:20–1:50] AI buyer buys end to end (the track, verbatim — UI only)
+Agent Chat (buyer role) — search catalog → negotiate → invoice → settle:
+- Show the chat upsell (`suggest_upsell_bundle` inside budget headroom), then the settle: real `pay_...` (mandate bound) or real `plink_...` escalation (no mandate).
+- Catalog → **AI-Sellability Score**: the merchant side of "transactable" — scan, auto-fix missing HSN, View JSON-LD (what AI buyers read).
+- Narration: "Make a merchant transactable by an AI buyer end to end — done, all in the UI."
 
 ## [1:50–3:20] Gated money + graceful failure (the bar, verbatim)
 - Settings → cap ₹50,000 → chat *"invoice for ₹1,00,000 and pay it"* → **403** + `settlement_blocked` in Audit Trail.
@@ -22,9 +19,9 @@ node scripts/agent_buyer_simulation.mjs   # catalog → 402 challenge → settle
 - Below-floor quote: `negotiated_price: 1` → `400 margin_floor_violation` **before** any Razorpay order exists.
 - Narration: "Limits live in the database and in deterministic gates — the LLM cannot talk its way past them. `node scripts/guardrail_eval.mjs` proves it: 15/15 offline gates, adversarial API probes blocked, zero false blocks."
 
-## [3:20–4:20] Growth, measured
-- `node scripts/demo_funnel.mjs` → funnel JSON: 10 suggested → 3 accepted (30% accept rate) on an isolated demo merchant.
-- Dashboard AI Lift card: same `suggested → accepted → paid` funnel; pay one DEMO invoice in test mode → webhook → `paid` ticks live.
+## [3:20–4:20] Growth, measured (UI only)
+- Campaigns → launch bulk upsell → Dashboard AI Lift card: `suggested → accepted → paid` ticks live.
+- Pay one invoice in test mode → webhook → `paid` moves on screen; no terminal needed.
 - Pack-bundle: `POST /api/agent/pack-bundle` fills revealed-budget headroom with the highest-margin complement — deterministic math, not LLM vibes.
 
 ## [4:20–5:00] Proof, not promises
@@ -41,6 +38,6 @@ Show: Dashboard (clean UI) → one line: "This is an Agentic Commerce Co-Pilot w
 ### Recording checklist
 - [ ] Razorpay test dashboard visible when a real `pay_`/`plink_` ID appears
 - [ ] `node scripts/guardrail_eval.mjs` output on screen (15/15 + live probes)
-- [ ] `node scripts/demo_funnel.mjs --report` JSON on the growth slide
+- [ ] Dashboard AI Lift funnel visible on the growth slide
 - [ ] No fake data on screen (demo seeds labeled DEMO; paid moves only via real test payment)
 - [ ] Demo Mode badge visible if Mistral key absent — honesty is part of the pitch

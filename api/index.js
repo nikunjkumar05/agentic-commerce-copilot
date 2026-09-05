@@ -134,7 +134,7 @@ async function enforceMandate(invoice) {
   // In a real multi-tenant app, this would be fetched via `buyer_id` or `did:web:`.
   // Here we use a global deterministic policy to replace the arbitrary compliance_score.
   const mandate = {
-    sku_allowlist: ['prod_it_license', 'prod_m365', 'prod_webex', 'prod_cloud_hosting', 'prod_cdn', 'prod_backup', 'prod_gst_filing', 'prod_audit', 'prod_esign'],
+    sku_allowlist: ['prod_it_license', 'prod_m365', 'prod_webex', 'prod_cloud_hosting', 'prod_cdn', 'prod_backup', 'prod_gst_filing', 'prod_audit', 'prod_esign', 'demo-seed-addon', 'demo-seed-product'],
     new_vendor: false
   };
 
@@ -2490,10 +2490,14 @@ const MISTRAL_KEYS = [process.env.MISTRAL_API_KEY, process.env.MISTRAL_API_KEY_2
 
 const hasAnyLLMKey = () => MISTRAL_KEYS.length > 0;
 
-// Slot order: chat burns quota fastest, so it leads with key 1; invoice leads with key 2.
+// Slot order: buyer leads key 1, merchant chat + invoice lead key 2 — the two
+// negotiating agents never share a first-choice key, so alternating auto turns
+// don't double the rate-limit load on one key. Every slot still fails over to
+// the other key; single-key setups behave exactly as before.
 function mistralKeysFor(slot) {
   const [k1, k2] = MISTRAL_KEYS;
-  return slot === 'invoice' ? [k2, k1].filter(Boolean) : [k1, k2].filter(Boolean);
+  if (slot === 'chat' || slot === 'invoice') return [k2, k1].filter(Boolean);
+  return [k1, k2].filter(Boolean);
 }
 
 async function postMistral(slot, body, timeoutMs) {
@@ -2853,13 +2857,13 @@ Your strict budget cap: ₹${budget} GST-inclusive (= ₹${budgetPreGST} pre-GST
 
 NEGOTIATION RULES — follow these in order:
 1. When the merchant quotes a price, ALWAYS counter with a lower offer. Do not accept the first price.
-2. Push back at least 2 times. Say things like "Can you do better?", "That's still over our limit — what's your floor?", "We need this under ₹${budgetPreGST} pre-GST."
-3. Only escalate AFTER the merchant has explicitly said they CANNOT go lower (their margin floor). 
+2. Push back at least 2 times across separate turns. Say things like "Can you do better?", "That's still over our limit — what's your floor?", "We need this under ₹${budgetPreGST} pre-GST."
+3. Escalation is FORBIDDEN in your first 2 replies. If the merchant's offer already fits your cap (pre-GST ≤ ₹${budgetPreGST}), ACCEPT it immediately per rule 5 — never counter a fitting offer. Otherwise counter. Only escalate AFTER you have countered at least twice AND the merchant has explicitly said they CANNOT go lower (their margin floor).
 4. A price is acceptable only if pre-GST price ≤ ₹${budgetPreGST}.
-5. If the merchant finally agrees to a pre-GST price ≤ ₹${budgetPreGST}, say "Perfect, please create the invoice at ₹X."
-6. ONLY output the escalation string below when the merchant has definitively refused to go below ₹${budgetPreGST}:
+5. If the merchant finally agrees to a pre-GST price ≤ ₹${budgetPreGST}, say "Perfect, please create the invoice at ₹X." — quote the pre-GST unit price ONLY (e.g. "at ₹7200"), never the GST-inclusive total. Never agree to add-ons autonomously — if the merchant proposes one, reply "Add it to the invoice so my human can review it" and let them draft the bundle.
+6. ONLY output the escalation string below when BOTH conditions hold: (a) you have already countered at least twice, and (b) the merchant has definitively refused to go below ₹${budgetPreGST}: Name ONLY the main goal product and its floor price — never add-ons or bundles. Output the string verbatim, never paraphrased:
 HUMAN_INTERVENTION_REQUIRED: The merchant's lowest price exceeds our budget. Should we increase the budget to meet their price, or walk away?
-7. Keep your responses to 1-2 sentences. Be direct and confident, not apologetic.`;
+7. Keep your responses to 1-2 sentences. Be direct and confident, not apologetic. Do not prefix replies with bracketed tags like [Counter Offer] or [Final Decision] — write plain sentences.`;
 
 
     // Flip roles so the Buyer Agent sees itself as 'assistant' and the Merchant as 'user'.
@@ -2883,7 +2887,7 @@ HUMAN_INTERVENTION_REQUIRED: The merchant's lowest price exceeds our budget. Sho
     };
 
 
-    const mistralRaw = await postMistral('chat', body, 20000);
+    const mistralRaw = await postMistral('buyer', body, 20000);
     if (!mistralRaw) throw new Error('Mistral returned null');
     const mistralRes = await mistralRaw.json();
 
@@ -3075,7 +3079,9 @@ This means you must treat ₹${Math.min(delegationMax, dailyLimit - dailySpent)}
   5. FINAL OFFER: If the buyer threatens to walk, go up to ~20% off list, but NEVER below the actual margin_floor from the catalog. Say: "This is our break-even rate — I genuinely cannot go lower."
   6. WALK-AWAY GRACE: If they still say no, do NOT beg. Say: "The offer stands whenever you're ready." Preserve the relationship.
   
-  HARD CONSTRAINT: NEVER sell below margin_floor. If the buyer asks for less, or if their internal budget cap is lower than the margin_floor, DO NOT offer a discount below the margin_floor. Instead, counter-offer at the margin_floor (stating it is your cost basis) or politely decline the sale.
+   HARD CONSTRAINT: NEVER sell below margin_floor. If the buyer asks for less, or if their internal budget cap is lower than the margin_floor, DO NOT offer a discount below the margin_floor. Instead, counter-offer at the margin_floor (stating it is your cost basis) or politely decline the sale.
+
+   QUOTE FORMAT (strict): every price you quote MUST be "₹X pre-GST + 18% GST = ₹Y total" (e.g. "₹7200 pre-GST + 18% GST = ₹8496 total"). Never quote a pre-GST price as "including GST", never invent totals — compute Y = round(X * 1.18) or state X pre-GST alone and let the invoice compute GST.
   
   When offering discounts, always pair them with a value anchor (bundle add-on, term commitment, or volume).
   
