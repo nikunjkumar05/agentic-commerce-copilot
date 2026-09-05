@@ -20,3 +20,5 @@ services:
         sync: false
       - key: MISTRAL_API_KEY_2
         sync: false
+      - key: VITE_RAZORPAY_KEY_ID
+        sync: false
