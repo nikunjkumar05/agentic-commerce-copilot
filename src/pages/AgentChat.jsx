@@ -9,6 +9,40 @@ import { toast } from 'sonner';
 import { db } from '@/services/db';
 import { generateInvoicePDF } from '@/lib/pdfGenerator';
 
+function AutoEscalationCard({ goal, budget, onRetry, onWalkAway }) {
+  const [newBudget, setNewBudget] = useState('');
+  return (
+    <div className="w-full mt-2 animate-in fade-in slide-in-from-bottom-2 duration-500">
+      <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl space-y-3">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-full bg-amber-500 text-white flex items-center justify-center text-xs font-bold">!</div>
+          <span className="text-sm font-bold text-amber-900">Budget Ceiling Hit</span>
+        </div>
+        <p className="text-xs text-amber-800">
+          The merchant's lowest price is above your ₹{budget?.toLocaleString('en-IN')} cap for <strong>{goal}</strong>. What would you like to do?
+        </p>
+        <div className="flex gap-2 items-center flex-wrap">
+          <input
+            className="flex-1 min-w-[120px] text-xs border rounded px-2 py-1.5 bg-white"
+            placeholder={`New budget e.g. ${Math.ceil((budget || 0) * 1.25)}`}
+            value={newBudget}
+            onChange={e => setNewBudget(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { const b = parseInt(newBudget, 10); if (b > 0) onRetry(b); } }}
+          />
+          <button
+            className="text-xs px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-700 text-white font-medium transition-colors"
+            onClick={() => { const b = parseInt(newBudget, 10); if (b > 0) onRetry(b); }}
+          >Increase & Retry</button>
+          <button
+            className="text-xs px-3 py-1.5 rounded border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium transition-colors"
+            onClick={onWalkAway}
+          >Walk Away</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AgentChat() {
   const navigate = useNavigate();
   
@@ -353,7 +387,12 @@ const [fallbackMode, setFallbackMode] = useState(false);
           const buyerMsg = await res.json();
           if (buyerMsg && buyerMsg.content) {
             if (buyerMsg.content.includes('HUMAN_INTERVENTION_REQUIRED')) {
-               setMessages(prev => [...prev, { role: 'user', content: buyerMsg.content }]);
+               setMessages(prev => [...prev, {
+                 role: 'user',
+                 content: "⚠️ **Budget ceiling hit.** The merchant's floor price is above our cap.",
+                 uiType: 'auto_escalation',
+                 uiData: { goal: autoGoal, budget: autoBudget }
+               }]);
                setIsAutoActive(false);
                setIsTyping(false);
             } else {
@@ -1145,6 +1184,15 @@ const [fallbackMode, setFallbackMode] = useState(false);
                     </div>
                   </div>
                 </div>
+              )}
+
+              {msg.uiType === 'auto_escalation' && msg.uiData && (
+                <AutoEscalationCard
+                  goal={msg.uiData.goal}
+                  budget={msg.uiData.budget}
+                  onRetry={(newBudget) => handleSend(null, `/auto ${newBudget} ${msg.uiData.goal}`)}
+                  onWalkAway={() => setMessages(prev => [...prev, { role: 'assistant', content: "Understood. Walking away from this deal. Let me know if you'd like to explore other options." }])}
+                />
               )}
 
               {msg.uiType === 'payment_blocked' && msg.uiData && (

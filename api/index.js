@@ -2846,17 +2846,20 @@ app.post('/api/agent/buyer-chat', authMiddleware, async (req, res) => {
       return res.status(503).json({ error: 'ai_not_configured' });
     }
 
-    const systemPrompt = `You are an AI Buyer Agent acting autonomously on behalf of a human company.
-Your Goal: ${goal}
-Your strict budget cap: ₹${budget} (GST inclusive).
+    const budgetPreGST = Math.floor(budget / 1.18);
+    const systemPrompt = `You are an aggressive AI Buyer Agent negotiating on behalf of your company.
+Your Goal: Purchase ${goal}.
+Your strict budget cap: ₹${budget} GST-inclusive (= ₹${budgetPreGST} pre-GST at 18% GST).
 
-You are negotiating with a Merchant Agent.
-1. Try to negotiate the price down to fit within your budget.
-2. If the merchant refuses to go below their margin floor, and their floor is higher than your budget, DO NOT agree to the higher price.
-3. Instead, if you cannot reach an agreement within budget, output EXACTLY this string (and nothing else):
+NEGOTIATION RULES — follow these in order:
+1. When the merchant quotes a price, ALWAYS counter with a lower offer. Do not accept the first price.
+2. Push back at least 2 times. Say things like "Can you do better?", "That's still over our limit — what's your floor?", "We need this under ₹${budgetPreGST} pre-GST."
+3. Only escalate AFTER the merchant has explicitly said they CANNOT go lower (their margin floor). 
+4. A price is acceptable only if pre-GST price ≤ ₹${budgetPreGST}.
+5. If the merchant finally agrees to a pre-GST price ≤ ₹${budgetPreGST}, say "Perfect, please create the invoice at ₹X."
+6. ONLY output the escalation string below when the merchant has definitively refused to go below ₹${budgetPreGST}:
 HUMAN_INTERVENTION_REQUIRED: The merchant's lowest price exceeds our budget. Should we increase the budget to meet their price, or walk away?
-4. If they agree to a price within your budget, explicitly ask them to "create the invoice".
-5. Keep your responses short, concise, and natural (1-2 sentences).`;
+7. Keep your responses to 1-2 sentences. Be direct and confident, not apologetic.`;
 
 
     // Flip roles so the Buyer Agent sees itself as 'assistant' and the Merchant as 'user'.
