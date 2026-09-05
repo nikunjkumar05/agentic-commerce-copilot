@@ -363,8 +363,15 @@ const [fallbackMode, setFallbackMode] = useState(false);
     const lastMsg = messages[messages.length - 1];
     if (!lastMsg) return;
 
-    // Terminal conditions: invoice created or buyer gave up
-    if (lastMsg.tool_calls?.some(c => c.function.name === 'create_invoice') || (lastMsg.role === 'user' && lastMsg.content?.includes('HUMAN_INTERVENTION_REQUIRED'))) {
+    // Terminal conditions — stop the loop
+    const isInvoiceCreated = lastMsg.tool_calls?.some(c => c.function.name === 'create_invoice');
+    const isPaymentTool    = lastMsg.tool_calls?.some(c => c.function.name === 'trigger_payment');
+    const isPaymentTerminal = ['checkout_inline', 'payment_done', 'payment_escalated', 'payment_blocked'].includes(lastMsg.uiType);
+    const isBuyerGaveUp    = lastMsg.role === 'user' && lastMsg.content?.includes('HUMAN_INTERVENTION_REQUIRED');
+    const isEscalationCard = lastMsg.uiType === 'auto_escalation';
+    const isPaymentToolResult = lastMsg.role === 'tool' && lastMsg.name === 'trigger_payment';
+
+    if (isInvoiceCreated || isPaymentTool || isPaymentTerminal || isBuyerGaveUp || isEscalationCard || isPaymentToolResult) {
       setIsAutoActive(false);
       return;
     }
@@ -463,6 +470,14 @@ const [fallbackMode, setFallbackMode] = useState(false);
        setAutoBudget(budget);
        setAutoGoal(goal);
        setIsAutoActive(true);
+
+       // Sync delegation cap to match the new budget so payment isn't blocked
+       const token = localStorage.getItem('app_access_token');
+       fetch('/api/user/delegation', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
+         body: JSON.stringify({ maxAmount: budget })
+       }).catch(() => {}); // non-blocking — best effort
        
        const startMsg = `[Auto-Negotiate Started] Goal: ${goal}, Budget: ₹${budget}\nHi, I want to purchase ${goal}. My budget is strict.`;
        handleSend(null, startMsg);
