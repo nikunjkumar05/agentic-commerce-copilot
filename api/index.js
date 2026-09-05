@@ -2859,11 +2859,19 @@ HUMAN_INTERVENTION_REQUIRED: The merchant's lowest price exceeds our budget. Sho
 5. Keep your responses short, concise, and natural (1-2 sentences).`;
 
 
+    // Flip roles so the Buyer Agent sees itself as 'assistant' and the Merchant as 'user'.
+    // IMPORTANT: tool_calls must be stripped from user-role messages — Mistral 422s otherwise.
+    // We inline the tool call description into the content string instead.
     const flippedMessages = (messages || []).map(m => {
-       if (m.role === 'user') return { ...m, role: 'assistant' };
-       if (m.role === 'assistant') return { ...m, role: 'user', content: (m.content || "") + (m.tool_calls ? JSON.stringify(m.tool_calls) : "") };
-       if (m.role === 'tool') return { ...m, role: 'user', content: "Tool Result: " + m.content };
-       return m;
+       if (m.role === 'user') return { role: 'assistant', content: m.content || '' };
+       if (m.role === 'assistant') {
+         const toolDesc = m.tool_calls?.length
+           ? ' [Merchant used tool: ' + m.tool_calls.map(tc => tc.function?.name).join(', ') + ']'
+           : '';
+         return { role: 'user', content: (m.content || '') + toolDesc };
+       }
+       if (m.role === 'tool') return { role: 'user', content: 'Tool Result (' + (m.name || 'unknown') + '): ' + (m.content || '') };
+       return { role: m.role, content: m.content || '' };
     });
 
     const body = {
