@@ -1307,7 +1307,7 @@ app.post('/api/agent/b2b-buy', authMiddleware, agentBuyRateLimiter, async (req, 
   await query('UPDATE invoices SET tx_hash = $1 WHERE id = $2', [order.id, invoiceId]);
 await query("UPDATE invoices SET tax_breakdown = $1 WHERE id = $2", [JSON.stringify(computeTaxSplit({ subtotal, rate: product.tax_rate || 18, sellerGstin: null, buyerGstin: null })), invoiceId]);
 
-  await appendAuditLog(req.user.id, {
+  await appendAuditLog(merchant.id, {
     action: 'x402_handshake_initiated',
     invoice_id: invoiceId, invoice_number: invoiceNumber, amount: grand_total,
     details: `AI Buyer requested ${product.name} from merchant ${merchant.email}. Issued HTTP 402 challenge (${order.id}).`
@@ -1392,7 +1392,7 @@ app.post('/api/checkout/verify', authMiddleware, async (req, res) => {
   // viewer in A2A flows).
   await countSpentToday(inv.user_id, inv.grand_total);
 
-  await appendAuditLog(req.user.id, {
+  await appendAuditLog(inv.user_id, {
     action: 'settlement_verified',
     invoice_id: inv.id,
     invoice_number: inv.invoice_number,
@@ -1553,7 +1553,7 @@ async function handleSettleB2BPay(req, res) {
   // without this, a bound mandate token could settle any challenge amount.
   const budgetBlock = await enforceBudget(req.user.id, Number(invoice.grand_total), delegation_max);
   if (budgetBlock) {
-    await appendAuditLog(req.user.id, {
+    await appendAuditLog(invoice.user_id, {
       ...budgetBlock.audit,
       invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,
@@ -1565,7 +1565,7 @@ async function handleSettleB2BPay(req, res) {
   const mandateBlock = await enforceMandate(invoice);
   if (mandateBlock) {
     await refundBudget(req.user.id, Number(invoice.grand_total));
-    await appendAuditLog(req.user.id, {
+    await appendAuditLog(invoice.user_id, {
       ...mandateBlock.audit,
       invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,
@@ -1682,7 +1682,7 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
   // budget breach is the more informative reason).
   const budgetBlock = await enforceBudget(req.user.id, invoice.grand_total, delegation_max);
   if (budgetBlock) {
-    await appendAuditLog(req.user.id, {
+    await appendAuditLog(invoice.user_id, {
       ...budgetBlock.audit,
       invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,
@@ -1695,7 +1695,7 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
   if (mandateBlock) {
     // Refund the reserved budget since we're blocking it
     await refundBudget(req.user.id, invoice.grand_total);
-    await appendAuditLog(req.user.id, {
+    await appendAuditLog(invoice.user_id, {
       ...mandateBlock.audit,
       invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,
@@ -1735,7 +1735,7 @@ app.post('/api/agent/settle', authMiddleware, agentSettleRateLimiter, async (req
     // user_id guard here would no-op for BUYERS settling merchant-owned invoices.
     await query("UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3 AND status = 'processing'", ['pending', order.id, invoice.id]);
 
-    await appendAuditLog(req.user.id, {
+    await appendAuditLog(invoice.user_id, {
       action: 'order_created',
       invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,
@@ -1847,7 +1847,7 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
       txHash = settlement.payment.id;
       await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3', ['paid', txHash, invoice.id]);
 
-      await appendAuditLog(req.user.id, {
+      await appendAuditLog(invoice.user_id, {
         action: 'settlement_auto',
         invoice_id: invoice.id,
         invoice_number: invoice.invoice_number,
@@ -1862,7 +1862,7 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
       txHash = order.id;
       await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3', ['pending', txHash, invoice.id]);
 
-      await appendAuditLog(req.user.id, {
+      await appendAuditLog(invoice.user_id, {
         action: 'settlement_escalated',
         invoice_id: invoice.id,
         invoice_number: invoice.invoice_number,
