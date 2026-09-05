@@ -9,6 +9,24 @@ import { toast } from 'sonner';
 import { db } from '@/services/db';
 import { generateInvoicePDF } from '@/lib/pdfGenerator';
 
+// Deterministic quote verifier — extracts ₹X pre-GST from merchant prose and
+// recomputes total + CGST/SGST in code. Displayed under every merchant quote
+// so hallucinated totals never stand alone.
+function verifiedQuote(content) {
+  if (!content || typeof content !== 'string') return null;
+  // Prefer explicit pre-GST in a floor/quote sentence
+  for (const sent of content.split(/[.!?\n]+/)) {
+    const m = sent.match(/₹\s*([\d,]+)\s*(?:pre-GST|before GST|pre GST)/i);
+    if (m) {
+      const pre = parseInt(m[1].replace(/,/g, ''), 10);
+      if (!Number.isFinite(pre)) continue;
+      const gst = Math.round(pre * 18 / 100);
+      return { pre, gst, cgst: Math.round(gst / 2), sgst: gst - Math.round(gst / 2), total: pre + gst };
+    }
+  }
+  return null;
+}
+
 function AutoEscalationCard({ goal, budget, onRetry, onWalkAway }) {
   const [newBudget, setNewBudget] = useState('');
   return (
@@ -130,7 +148,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
         role: 'assistant',
         content: `Invoice ${newInvoice.invoice_number} created for ₹${grand_total.toLocaleString('en-IN')}.`,
         uiType: 'invoice',
-        uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number }
+        uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number, subtotal, tax_total, grand_total }
       }]);
       toast.success('Invoice created via manual fallback checkout');
     } catch (e) {
@@ -851,6 +869,30 @@ const [fallbackMode, setFallbackMode] = useState(false);
               continue;
             }
 
+            // Auto-mode upsell steer: single item fits but headroom covers the
+            // cheapest add-on — force the bundle move once (monotonic concession:
+            // merchant must propose value before minting). A second consecutive
+            // single-item call means the buyer declined add-ons → let it through.
+            if (isAutoActive && autoBudget > 0 && line_items.length === 1) {
+              const cheapestAddon = (Array.isArray(catalogList) ? catalogList : [])
+                .map(p => Number(p.price) * 1.18)
+                .filter(n => Number.isFinite(n) && n > 0)
+                .sort((a, b) => a - b)[0];
+              let steerCut = 0;
+              messages.forEach((m, i) => { if ((m.content || '').includes('[Auto-Negotiate Started]')) steerCut = i; });
+              const steeredAlready = messages.slice(steerCut).some(m => m.role === 'tool' && m.name === 'create_invoice' && (m.content || '').includes('UPSELL-STEER'));
+               if (cheapestAddon && grand_total + cheapestAddon <= autoBudget && !steeredAlready) {
+                const cheapestName = (Array.isArray(catalogList) ? catalogList.slice().sort((a,b)=>Number(a.price)-Number(b.price))[0]?.name : '') || 'add-on';
+                setMessages(prev => [...prev, {
+                  role: 'tool',
+                  tool_call_id: call.id,
+                  name: 'create_invoice',
+                  content: `UPSELL-STEER: single item fits (₹${grand_total} of ₹${autoBudget} cap) but ₹${Math.floor(autoBudget - grand_total)} headroom remains. Call suggest_upsell_bundle with a complementary add-on (e.g. ${cheapestName}) whose total keeps the bundle ≤ ₹${autoBudget} incl. GST. If the buyer already declined add-ons, call create_invoice again unchanged to confirm single-item.`
+                }]);
+                continue;
+              }
+            }
+
             try {
               const newInvoice = await db.entities.Invoice.create({
                 merchant_id: localStorage.getItem('agent_selected_merchant') || undefined,
@@ -880,7 +922,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                 name: 'create_invoice',
                 content: `I have generated invoice ${newInvoice.invoice_number} for ${itemNames} at ₹${subtotal}. ${args.is_ai_upsell ? 'Great choice on the bundle! 🎯' : ''}`,
                 uiType: 'invoice',
-                uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number }
+                uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number, subtotal, tax_total, grand_total }
               }]);
             } catch (err) {
               setMessages(prev => [...prev, {
@@ -894,7 +936,56 @@ const [fallbackMode, setFallbackMode] = useState(false);
 
           else if (call.function.name === 'update_invoice') {
             try {
-              const targetId = args.invoice_id?.trim() || lastInvoiceId;
+              let targetId = args.invoice_id?.trim() || lastInvoiceId;
+              if (!targetId) {
+                // Create base invoice first, then apply upsell
+                const profile = {};
+                let buyerProfile = { name: 'AI Agent Buyer', address: 'New Delhi, India' };
+                try { profile = JSON.parse(localStorage.getItem('institution_profile') || '{}'); } catch {}
+                try { buyerProfile = JSON.parse(localStorage.getItem('buyer_profile') || '{}'); } catch {}
+                const today = new Date().toISOString();
+                const due = new Date(Date.now() + 30 * 86400000).toISOString();
+                const itemsList = args.line_items || [{ description: args.description || 'Custom Item', amount: args.amount || 0 }];
+                const items = itemsList.map(item => {
+                  const baseAmount = Number(item.amount || item.unit_price || item.price || 0) || 0;
+                  const qty = Number(item.quantity || 1);
+                  const tax = Math.round(baseAmount * qty * 18 / 100);
+                  const totalAmount = baseAmount * qty;
+                  return {
+                    sku: item.sku,
+                    description: item.description || 'Custom Item',
+                    quantity: qty,
+                    unit_price: baseAmount,
+                    tax_rate: 18,
+                    total: totalAmount
+                  };
+                });
+                const subtotal = items.reduce((s, it) => s + it.total, 0);
+                const tax_total = items.reduce((s, it) => s + it.tax, 0);
+                const grand_total = subtotal + tax_total;
+                
+                const newInvoice = await db.entities.Invoice.create({
+                  merchant_id: localStorage.getItem('agent_selected_merchant') || undefined,
+                  invoice_number: 'INV-' + Math.floor(Math.random() * 100000),
+                  institution_name: profile.name || 'AgentPay Gateway',
+                  institution_address: profile.address || 'New Delhi, India',
+                  gst_number: profile.gst || '07AAACN0372J1ZB',
+                  recipient_name: buyerProfile.name || 'AI Agent Buyer',
+                  recipient_address: buyerProfile.address || 'New Delhi, India',
+                  recipient_gst: '',
+                  line_items: items,
+                  subtotal,
+                  tax_total,
+                  grand_total,
+                  currency: 'INR',
+                  status: 'draft',
+                  invoice_date: today,
+                  due_date: due,
+                  is_ai_upsell: false
+                });
+                setLastInvoiceId(newInvoice.id);
+                targetId = newInvoice.id;
+              }
               const existing = await db.entities.Invoice.read(targetId);
               if (!existing) throw new Error('Invoice not found');
               
@@ -1028,7 +1119,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                   name: 'trigger_payment',
                   content: 'The invoice has been autonomously settled via the Server-to-Server API. No human intervention was required.',
                   uiType: 'payment_done',
-                  uiData: { id: res.invoice_uuid || targetId, tx_id: res.payment_id || res.order_id }
+                  uiData: { id: res.invoice_uuid || targetId, tx_id: res.payment_id || res.order_id, order_id: res.order_id || res.invoice_uuid }
                 }]);
               }
               
@@ -1131,6 +1222,11 @@ const [fallbackMode, setFallbackMode] = useState(false);
                   </span>
                 </div>
               )}
+              {msg.role === 'assistant' && (() => { const v = verifiedQuote(msg.content); return v ? (
+                <div className="mt-1 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] font-mono text-emerald-800 flex flex-wrap gap-1 items-center">
+                  <Shield className="w-3 h-3" /> Verified: ₹{v.pre.toLocaleString('en-IN')} pre-GST + ₹{v.gst.toLocaleString('en-IN')} GST (CGST ₹{v.cgst.toLocaleString('en-IN')} + SGST ₹{v.sgst.toLocaleString('en-IN')}) = ₹{v.total.toLocaleString('en-IN')} total
+                </div>
+              ) : null; })()}
               
               {/* Dynamic UI Rendering based on JSON serializable types */}
               {msg.uiType === 'catalog' && msg.uiData?.results && (
@@ -1177,6 +1273,18 @@ const [fallbackMode, setFallbackMode] = useState(false);
                       </div>
                     </div>
                     
+                    {(() => {
+                      const gt = msg.uiData.grand_total, st = msg.uiData.subtotal, tt = msg.uiData.tax_total;
+                      if (!Number.isFinite(gt)) return null;
+                      const cgst = Math.round((tt || 0) / 2), sgst = (tt || 0) - cgst;
+                      return (
+                        <div className="text-[11px] font-mono bg-muted/50 rounded-lg p-2 space-y-0.5 border">
+                          <div className="flex justify-between"><span>Subtotal (pre-GST)</span><span>₹{Number(st||0).toLocaleString('en-IN')}</span></div>
+                          <div className="flex justify-between text-muted-foreground"><span>GST 18% (CGST ₹{cgst.toLocaleString('en-IN')} + SGST ₹{sgst.toLocaleString('en-IN')})</span><span>₹{Number(tt||0).toLocaleString('en-IN')}</span></div>
+                          <div className="flex justify-between font-bold border-t pt-1 mt-1"><span>Total Due</span><span>₹{Number(gt).toLocaleString('en-IN')}</span></div>
+                        </div>
+                      );
+                    })()}
                     <div className="flex flex-col gap-2 pt-2 border-t">
                       <Button 
                         onClick={async () => {
@@ -1215,7 +1323,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                                   setMessages(prev => [...prev, {
                                     role: 'tool', tool_call_id: 'payment_success', name: 'user_payment',
                                     content: `Payment completed for ${msg.uiData.invoice_number}. Thank you!`,
-                                    uiType: 'payment_done', uiData: { id: msg.uiData.id, tx_id: response.razorpay_payment_id }
+                                    uiType: 'payment_done', uiData: { id: msg.uiData.id, tx_id: response.razorpay_payment_id, order_id: response.razorpay_order_id }
                                   }]);
                                 } catch (e) {
                                   toast.error('Payment verification failed.');
@@ -1290,11 +1398,12 @@ const [fallbackMode, setFallbackMode] = useState(false);
                        <span className="text-sm font-bold text-green-800">Payment Successful</span>
                     </div>
                      {msg.uiData.tx_id && (
-                       <div className="bg-white/80 p-2 rounded-md text-xs font-mono text-green-700 border border-green-100 break-all shadow-inner">
-                         TX: {msg.uiData.tx_id}
+                       <div className="bg-white/80 p-2 rounded-md text-xs font-mono text-green-700 border border-green-100 break-all shadow-inner space-y-1">
+                         <div>TX: {msg.uiData.tx_id}</div>
+                         {msg.uiData.order_id && <div>Order: {msg.uiData.order_id}</div>}
                        </div>
                      )}
-                     <p className="text-xs text-green-700">Invoice sent to your mail.</p>
+                     <p className="text-xs text-green-700">Invoice sent to your mail. <button className="underline text-green-800" onClick={() => navigate(`/invoice/${msg.uiData.id}`)}>Verify in audit →</button></p>
                     <div className="flex gap-2">
                       <Button size="sm" className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs h-9 shadow-sm" onClick={() => navigate(`/invoice/${msg.uiData.id}`)}>
                         View Invoice
@@ -1426,7 +1535,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                           setMessages(prev => [...prev, {
                             role: 'tool', tool_call_id: 'human-bundle-approve', name: 'create_invoice',
                             content: `Human approved the bundle — invoice ${newInvoice.invoice_number} created.`,
-                            uiType: 'invoice', uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number }
+                            uiType: 'invoice', uiData: { id: newInvoice.id, invoice_number: newInvoice.invoice_number, subtotal: d.subtotal, tax_total: d.tax_total, grand_total: d.grand_total }
                           }]);
                           toast.success('Bundle invoice created');
                         } catch (e) { toast.error(e.message || 'Could not create bundle invoice'); }

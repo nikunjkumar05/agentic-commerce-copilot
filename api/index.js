@@ -77,6 +77,18 @@ export async function appendAuditLog(userId, data) {
   });
 }
 
+// Double-entry settlements: every successful money movement is logged on BOTH
+// sides — the invoice owner (merchant) and the payer (buyer). Buyer-created
+// invoices live under the merchant's user_id (buyer_id = payer), so writing
+// only invoice.user_id made every successful settlement invisible in the
+// buyer's Audit Trail, while blocks were logged under req.user.id and showed
+// up. Mirrors the both-sides pattern already used by the x402 b2b-pay flow.
+async function appendAuditBoth(userIds, data) {
+  for (const uid of [...new Set(userIds.filter(Boolean))]) {
+    await appendAuditLog(uid, data);
+  }
+}
+
 app.use(cors({ origin: true, credentials: true, allowedHeaders: ['Content-Type', 'Authorization', 'X-App-Id'] }));
 // Keep the RAW request body so webhook HMAC verification runs over the exact
 // bytes Razorpay signed (re-stringifying parsed JSON is not byte-identical).
@@ -1392,7 +1404,7 @@ app.post('/api/checkout/verify', authMiddleware, async (req, res) => {
   // viewer in A2A flows).
   await countSpentToday(inv.user_id, inv.grand_total);
 
-  await appendAuditLog(inv.user_id, {
+  await appendAuditBoth([inv.user_id, req.user.id], {
     action: 'settlement_verified',
     invoice_id: inv.id,
     invoice_number: inv.invoice_number,
@@ -1847,7 +1859,7 @@ app.post('/api/agent/auto-settle', authMiddleware, agentSettleRateLimiter, async
       txHash = settlement.payment.id;
       await query('UPDATE invoices SET status = $1, tx_hash = $2 WHERE id = $3', ['paid', txHash, invoice.id]);
 
-      await appendAuditLog(invoice.user_id, {
+      await appendAuditBoth([invoice.user_id, req.user.id], {
         action: 'settlement_auto',
         invoice_id: invoice.id,
         invoice_number: invoice.invoice_number,
@@ -2167,8 +2179,8 @@ app.post('/api/agent/verify', authMiddleware, agentSettleRateLimiter, async (req
     });
   }
 
-  // Log successful agent payment
-  await appendAuditLog(req.user.id, {
+  // Log successful agent payment (both merchant and buyer ledgers)
+  await appendAuditBoth([invoice.user_id, req.user.id], {
     action: 'settlement_captured',
     invoice_id: invoice_id,
     invoice_number: invoice.invoice_number,
@@ -2378,7 +2390,7 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
     // Locate the invoice strictly by order_id (which is anchored into tx_hash) OR by receipt.
     // Deterministic order: without ORDER BY, invoice_number collisions could settle the wrong row.
     const invRes = await query(
-      'SELECT id, user_id, invoice_number, grand_total, status, tx_hash FROM invoices WHERE invoice_number = $1 OR tx_hash = $2 ORDER BY created_date DESC LIMIT 1',
+      'SELECT id, user_id, buyer_id, invoice_number, grand_total, status, tx_hash FROM invoices WHERE invoice_number = $1 OR tx_hash = $2 ORDER BY created_date DESC LIMIT 1',
       [receipt, orderId]
     );
     const inv = invRes.rows[0];
@@ -2448,7 +2460,7 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
     // conversion so the Campaign Orchestrator funnel reflects real revenue.
     await bumpCampaignForInvoice(inv.id, 'paid');
 
-    await appendAuditLog(inv.user_id, {
+    await appendAuditBoth([inv.user_id, inv.buyer_id], {
       action: 'settlement_captured',
       invoice_id: inv.id,
       invoice_number: inv.invoice_number,
@@ -2463,10 +2475,10 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
 
   if (event === 'payment.failed') {
     if (receipt) {
-      const invRes = await query('SELECT id, user_id, invoice_number, grand_total FROM invoices WHERE invoice_number = $1', [receipt]);
+      const invRes = await query('SELECT id, user_id, buyer_id, invoice_number, grand_total FROM invoices WHERE invoice_number = $1', [receipt]);
       const inv = invRes.rows[0];
       if (inv) {
-        await appendAuditLog(inv.user_id, {
+        await appendAuditBoth([inv.user_id, inv.buyer_id], {
           action: 'settlement_failed',
           invoice_id: inv.id,
           invoice_number: inv.invoice_number,
@@ -2856,8 +2868,8 @@ Your Goal: Purchase ${goal}.
 Your strict budget cap: ₹${budget} GST-inclusive (= ₹${budgetPreGST} pre-GST at 18% GST).
 
 NEGOTIATION RULES — follow these in order:
-1. When the merchant quotes a price, ALWAYS counter with a lower offer. Do not accept the first price.
-2. Push back at least 2 times across separate turns. Say things like "Can you do better?", "That's still over our limit — what's your floor?", "We need this under ₹${budgetPreGST} pre-GST."
+1. Compare every quote honestly to your cap: if it is OVER, say so and counter lower; if it FITS, say it fits but still ask for a better enterprise rate ("That fits — can you do better on value?"). Never claim a fitting price is over budget. Always push at least once — do not accept the first price.
+2. Push back at least 2 times across separate turns. Over-cap: "That's still over our limit — what's your floor?", "We need this under ₹${budgetPreGST} pre-GST." Fitting: "That fits — what's your best enterprise rate?"
 3. Escalation is FORBIDDEN in your first 2 replies. If the merchant's offer already fits your cap (pre-GST ≤ ₹${budgetPreGST}), ACCEPT it immediately per rule 5 — never counter a fitting offer. Otherwise counter. Only escalate AFTER you have countered at least twice AND the merchant has explicitly said they CANNOT go lower (their margin floor).
 4. A price is acceptable only if pre-GST price ≤ ₹${budgetPreGST}.
 5. If the merchant finally agrees to a pre-GST price ≤ ₹${budgetPreGST}, say "Perfect, please create the invoice at ₹X." — quote the pre-GST unit price ONLY (e.g. "at ₹7200"), never the GST-inclusive total. Never agree to add-ons autonomously — if the merchant proposes one, reply "Add it to the invoice so my human can review it" and let them draft the bundle.
@@ -3082,6 +3094,8 @@ This means you must treat ₹${Math.min(delegationMax, dailyLimit - dailySpent)}
    HARD CONSTRAINT: NEVER sell below margin_floor. If the buyer asks for less, or if their internal budget cap is lower than the margin_floor, DO NOT offer a discount below the margin_floor. Instead, counter-offer at the margin_floor (stating it is your cost basis) or politely decline the sale.
 
    QUOTE FORMAT (strict): every price you quote MUST be "₹X pre-GST + 18% GST = ₹Y total" (e.g. "₹7200 pre-GST + 18% GST = ₹8496 total"). Never quote a pre-GST price as "including GST", never invent totals — compute Y = round(X * 1.18) or state X pre-GST alone and let the invoice compute GST.
+
+   CONCESSION PACING: move ONE ladder step per buyer pushback — never jump from list price straight to margin_floor in a single reply, even when the buyer's budget is huge. HEADROOM UPSELL: when the buyer's cap leaves room above your current offer for a complementary add-on (combined total incl. GST still ≤ cap), the bundle step MUST call 'suggest_upsell_bundle' with a fitting add-on BEFORE any invoice — a fitting add-on is mandatory, not optional.
   
   When offering discounts, always pair them with a value anchor (bundle add-on, term commitment, or volume).
   

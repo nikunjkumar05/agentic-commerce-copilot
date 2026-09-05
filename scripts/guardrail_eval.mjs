@@ -168,6 +168,26 @@ process.env.RAZORPAY_KEY_SECRET = 'eval-key-secret';
   check('offline', 's2s_binding: non-captured rejected', !verifyBinding(orderId, totalPaise(8496), notCaptured));
 }
 
+// A9: upsell-steer routing (auto-mode single-item invoice with add-on headroom)
+{
+  const route = ({ nItems, grand, cap, cheapest, steered }) => {
+    if (grand > cap) return 'BLOCKED';
+    if (nItems > 1) return 'upsell_offer';
+    if (cheapest && grand + cheapest <= cap && !steered) return 'UPSELL-STEER';
+    return 'create';
+  };
+  // 50k transcript: single audit 8496, cheapest add-on e-Sign 1770 -> steer once
+  check('offline', 'steer: single fitting item + headroom -> UPSELL-STEER', route({ nItems: 1, grand: 8496, cap: 50000, cheapest: 1770, steered: false }) === 'UPSELL-STEER');
+  // Buyer declined add-ons (second consecutive single call) -> through
+  check('offline', 'steer: second single-item call after steer -> create', route({ nItems: 1, grand: 8496, cap: 50000, cheapest: 1770, steered: true }) === 'create');
+  // Tight budget: 8496 + 1770 = 10266 > 10000 -> straight to invoice, no steer
+  check('offline', 'steer: no headroom (8496 vs 10000) -> create', route({ nItems: 1, grand: 8496, cap: 10000, cheapest: 1770, steered: false }) === 'create');
+  // Over cap still blocked first (precedence over steer)
+  check('offline', 'steer: over-cap single still BLOCKED', route({ nItems: 1, grand: 10620, cap: 10000, cheapest: 1770, steered: false }) === 'BLOCKED');
+  // Unreachable catalog (no cheapest) fails open to single create
+  check('offline', 'steer: empty catalog fails open -> create', route({ nItems: 1, grand: 8496, cap: 50000, cheapest: undefined, steered: false }) === 'create');
+}
+
 // ---------- Section B: live probes (opt-in) ----------
 const BASE = process.env.EVAL_API_BASE;
 const JWT = process.env.EVAL_JWT;
