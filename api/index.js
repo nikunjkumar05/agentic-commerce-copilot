@@ -2880,9 +2880,14 @@ HUMAN_INTERVENTION_REQUIRED: The merchant's lowest price exceeds our budget. Sho
     };
 
 
-    const mistralRes = await postMistral('chat', body, 20000);
-    if (!mistralRes) throw new Error('Mistral returned null');
+    const mistralRaw = await postMistral('chat', body, 20000);
+    if (!mistralRaw) throw new Error('Mistral returned null');
+    const mistralRes = await mistralRaw.json();
 
+    if (!mistralRes?.choices?.length) {
+      console.error('Buyer Agent: bad Mistral response:', JSON.stringify(mistralRes));
+      throw new Error('Mistral returned empty choices');
+    }
     return res.json(mistralRes.choices[0].message);
   } catch (err) {
     console.error('Buyer Agent Error:', err);
