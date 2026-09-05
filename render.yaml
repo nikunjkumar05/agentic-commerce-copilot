@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: agentic-commerce-copilot
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node api/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
