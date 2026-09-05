@@ -2836,6 +2836,52 @@ app.post('/api/llm/invoke', authMiddleware, async (req, res) => {
 });
 
 // --- Conversational AI Checkout Agent (Tier 2) ---
+
+// --- Buyer Agent Endpoint (for Auto-Negotiation) ---
+app.post('/api/agent/buyer-chat', authMiddleware, async (req, res) => {
+  try {
+    const { messages, goal, budget } = req.body;
+    
+    if (!hasAnyLLMKey()) {
+      return res.status(503).json({ error: 'ai_not_configured' });
+    }
+
+    const systemPrompt = `You are an AI Buyer Agent acting autonomously on behalf of a human company.
+Your Goal: ${goal}
+Your strict budget cap: ₹${budget} (GST inclusive).
+
+You are negotiating with a Merchant Agent.
+1. Try to negotiate the price down to fit within your budget.
+2. If the merchant refuses to go below their margin floor, and their floor is higher than your budget, DO NOT agree to the higher price.
+3. Instead, if you cannot reach an agreement within budget, output EXACTLY this string (and nothing else):
+HUMAN_INTERVENTION_REQUIRED: The merchant's lowest price exceeds our budget. Should we increase the budget to meet their price, or walk away?
+4. If they agree to a price within your budget, explicitly ask them to "create the invoice".
+5. Keep your responses short, concise, and natural (1-2 sentences).`;
+
+
+    const flippedMessages = (messages || []).map(m => {
+       if (m.role === 'user') return { ...m, role: 'assistant' };
+       if (m.role === 'assistant') return { ...m, role: 'user', content: (m.content || "") + (m.tool_calls ? JSON.stringify(m.tool_calls) : "") };
+       if (m.role === 'tool') return { ...m, role: 'user', content: "Tool Result: " + m.content };
+       return m;
+    });
+
+    const body = {
+      model: MISTRAL_MODEL,
+      messages: [{ role: 'system', content: systemPrompt }, ...flippedMessages]
+    };
+
+
+    const mistralRes = await postMistral(body);
+    if (!mistralRes) throw new Error('Mistral returned null');
+
+    return res.json(mistralRes.choices[0].message);
+  } catch (err) {
+    console.error('Buyer Agent Error:', err);
+    res.status(500).json({ error: 'buyer_agent_error', message: err.message });
+  }
+});
+
 app.post('/api/agent/chat', authMiddleware, async (req, res) => {
   if (await getOpsFlag('llm_disabled')) {
     return res.status(503).json({

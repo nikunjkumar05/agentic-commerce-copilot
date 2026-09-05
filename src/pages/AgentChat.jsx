@@ -26,6 +26,9 @@ export default function AgentChat() {
   });
 
   const [input, setInput] = useState('');
+  const [autoGoal, setAutoGoal] = useState(null);
+  const [autoBudget, setAutoBudget] = useState(null);
+  const [isAutoActive, setIsAutoActive] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   // True while the Razorpay modal is closing and /api/agent/verify is in
   // flight (or has just completed) — shows "Confirming payment…" so the
@@ -319,12 +322,74 @@ const [fallbackMode, setFallbackMode] = useState(false);
     return () => clearInterval(interval);
   }, [messages]);
 
-  const handleSend = async (e) => {
-    e?.preventDefault();
-    if (!input.trim()) return;
+  
+  // Auto-Negotiation loop
+  useEffect(() => {
+    if (!isAutoActive || isTyping) return;
+    const lastMsg = messages[messages.length - 1];
+    if (!lastMsg) return;
 
-    const userText = input;
-    setInput('');
+    if (lastMsg.tool_calls?.some(c => c.function.name === 'create_invoice') || (lastMsg.role === 'user' && lastMsg.content?.includes('HUMAN_INTERVENTION_REQUIRED'))) {
+      setIsAutoActive(false);
+      return;
+    }
+
+    if (lastMsg.role === 'assistant' || lastMsg.role === 'tool') {
+      const runBuyerAgent = async () => {
+        setIsTyping(true);
+        try {
+          const token = localStorage.getItem('app_access_token');
+          const res = await fetch('/api/agent/buyer-chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
+            body: JSON.stringify({ goal: autoGoal, budget: autoBudget, messages })
+          });
+          const buyerMsg = await res.json();
+          if (buyerMsg && buyerMsg.content) {
+            if (buyerMsg.content.includes('HUMAN_INTERVENTION_REQUIRED')) {
+               setMessages(prev => [...prev, { role: 'user', content: buyerMsg.content }]);
+               setIsAutoActive(false);
+               setIsTyping(false);
+            } else {
+               // Send it through the normal flow!
+               handleSend(null, buyerMsg.content);
+            }
+          } else {
+             setIsAutoActive(false);
+             setIsTyping(false);
+          }
+        } catch(err) {
+          console.error(err);
+          setIsAutoActive(false);
+          setIsTyping(false);
+        }
+      };
+      runBuyerAgent();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, isAutoActive, isTyping, autoGoal, autoBudget]);
+
+  const handleSend = async (e, overrideText = null) => {
+    e?.preventDefault();
+    if (!overrideText && !input.trim()) return;
+
+    const userText = overrideText || input;
+    if (!overrideText) setInput('');
+
+    if (userText.startsWith('/auto ')) {
+       const parts = userText.split(' ');
+       const budget = parseInt(parts[1], 10);
+       const goal = parts.slice(2).join(' ');
+       
+       setAutoBudget(budget);
+       setAutoGoal(goal);
+       setIsAutoActive(true);
+       
+       const startMsg = `[Auto-Negotiate Started] Goal: ${goal}, Budget: ₹${budget}\nHi, I want to purchase ${goal}. My budget is strict.`;
+       handleSend(null, startMsg);
+       return;
+    }
+
     
     const newMessages = [...messages, { role: 'user', content: userText }];
     setMessages(newMessages);
