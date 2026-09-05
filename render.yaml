@@ -3,7 +3,7 @@ services:
     name: agentic-commerce-copilot
     env: node
     plan: free
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --include=dev && npm run build
     startCommand: node api/index.js
     envVars:
       - key: NODE_ENV
