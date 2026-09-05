@@ -329,12 +329,18 @@ const [fallbackMode, setFallbackMode] = useState(false);
     const lastMsg = messages[messages.length - 1];
     if (!lastMsg) return;
 
+    // Terminal conditions: invoice created or buyer gave up
     if (lastMsg.tool_calls?.some(c => c.function.name === 'create_invoice') || (lastMsg.role === 'user' && lastMsg.content?.includes('HUMAN_INTERVENTION_REQUIRED'))) {
       setIsAutoActive(false);
       return;
     }
 
-    if (lastMsg.role === 'assistant' || lastMsg.role === 'tool') {
+    if (lastMsg.role === 'tool') {
+      // Merchant is mid-turn — tool result appended, now feed it back to get merchant's text reply
+      // This drives the continuation: Merchant LLM sees the tool result and responds with a text offer
+      handleSend(null, null, true /* merchantContinue */);
+    } else if (lastMsg.role === 'assistant' && lastMsg.content && !lastMsg.tool_calls) {
+      // Merchant finished its turn with a text message — now Buyer Agent responds
       const runBuyerAgent = async () => {
         setIsTyping(true);
         try {
@@ -351,7 +357,7 @@ const [fallbackMode, setFallbackMode] = useState(false);
                setIsAutoActive(false);
                setIsTyping(false);
             } else {
-               // Send it through the normal flow!
+               // Pass buyer reply through merchant chat (normal flow)
                handleSend(null, buyerMsg.content);
             }
           } else {
@@ -369,9 +375,43 @@ const [fallbackMode, setFallbackMode] = useState(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, isAutoActive, isTyping, autoGoal, autoBudget]);
 
-  const handleSend = async (e, overrideText = null) => {
+  const handleSend = async (e, overrideText = null, merchantContinue = false) => {
     e?.preventDefault();
-    if (!overrideText && !input.trim()) return;
+    if (!merchantContinue && !overrideText && !input.trim()) return;
+
+    // merchantContinue: called from useEffect when a tool result was appended.
+    // Don't add a user message — just re-call /api/agent/chat so the Merchant
+    // LLM can read the tool result and produce its next text reply.
+    if (merchantContinue) {
+      setIsTyping(true);
+      try {
+        const token = localStorage.getItem('app_access_token');
+        const currentMessages = messages; // snapshot from closure
+        const res = await fetch('/api/agent/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
+          body: JSON.stringify({
+            merchant_id: localStorage.getItem('agent_selected_merchant') || undefined,
+            messages: currentMessages.map(m => {
+              const cleanMsg = { role: m.role, content: m.content || "" };
+              if (m.name) cleanMsg.name = m.name;
+              if (m.tool_call_id) cleanMsg.tool_call_id = m.tool_call_id;
+              if (m.tool_calls) cleanMsg.tool_calls = m.tool_calls;
+              return cleanMsg;
+            })
+          })
+        });
+        const data = await res.json().catch(() => null);
+        if (data && (data.tool_calls || data.content)) {
+          setMessages(prev => [...prev, data]);
+        }
+      } catch(err) {
+        console.error(err);
+      } finally {
+        setIsTyping(false);
+      }
+      return;
+    }
 
     const userText = overrideText || input;
     if (!overrideText) setInput('');

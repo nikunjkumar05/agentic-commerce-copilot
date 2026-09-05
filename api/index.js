@@ -2872,7 +2872,7 @@ HUMAN_INTERVENTION_REQUIRED: The merchant's lowest price exceeds our budget. Sho
     };
 
 
-    const mistralRes = await postMistral(body);
+    const mistralRes = await postMistral('chat', body, 20000);
     if (!mistralRes) throw new Error('Mistral returned null');
 
     return res.json(mistralRes.choices[0].message);
