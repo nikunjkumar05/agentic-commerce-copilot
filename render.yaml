@@ -18,3 +18,5 @@ services:
         sync: false
       - key: MISTRAL_API_KEY
         sync: false
+      - key: MISTRAL_API_KEY_2
+        sync: false
